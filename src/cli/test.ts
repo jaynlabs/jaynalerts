@@ -20,6 +20,7 @@ export async function runTest(): Promise<void> {
 	});
 
 	console.log(`Sent two notifications. If you didn't see them:
-  1. Open System Settings → Notifications and confirm alerter is allowed.
-  2. If alerter was missing, run: brew install vjeantet/tap/alerter`);
+  1. Open System Settings → Notifications → JaynAlerts and confirm alerts are allowed.
+  2. Run \`jaynalerts grant-terminal-notifications\` once for this terminal app.
+  3. If the notifier bundle is missing, run \`jaynalerts init\` to rebuild it.`);
 }
