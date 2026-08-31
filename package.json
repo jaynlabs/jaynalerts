@@ -39,6 +39,7 @@
 	},
 	"files": [
 		"src",
+		"assets",
 		"examples",
 		"README.md",
 		"LICENSE"
