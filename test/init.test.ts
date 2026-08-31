@@ -1,0 +1,345 @@
+import { afterEach, expect, test } from "bun:test";
+import {
+	lstat,
+	mkdir,
+	mkdtemp,
+	readFile,
+	readlink,
+	rm,
+	stat,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const temporaryHomes: string[] = [];
+
+// Every test here spawns a real `init`, which compiles the Swift notifier
+// bundle with swiftc. That does not fit in bun's 5s default timeout.
+const INIT_TIMEOUT_MS = 60_000;
+
+afterEach(async () => {
+	for (const home of temporaryHomes.splice(0)) {
+		await rm(home, { force: true, recursive: true });
+	}
+});
+
+test(
+	"opencode init writes plugin and is idempotent",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+
+		await runInitInHome(home);
+
+		const target = join(
+			home,
+			".config",
+			"opencode",
+			"plugins",
+			"jaynalerts.ts",
+		);
+		const source = await readFile("examples/opencode-plugin.ts", "utf8");
+
+		expect(await readFile(target, "utf8")).toBe(source);
+		const firstStat = await stat(target);
+
+		await runInitInHome(home);
+
+		expect(await readFile(target, "utf8")).toBe(source);
+		expect((await stat(target)).mtimeMs).toBe(firstStat.mtimeMs);
+	},
+	INIT_TIMEOUT_MS,
+);
+
+test(
+	"shell init writes zshrc block and is idempotent",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		const zshrc = join(home, ".zshrc");
+
+		await Bun.write(zshrc, "# user content\nexport FOO=1\n");
+
+		await runShellInitInHome(home);
+		const first = await readFile(zshrc, "utf8");
+		expect(first).toContain("# user content");
+		expect(first).toContain("jaynalerts begin");
+		expect(first).toContain("jaynalerts notify-command");
+
+		await runShellInitInHome(home);
+		const second = await readFile(zshrc, "utf8");
+		expect(second).toBe(first);
+	},
+	INIT_TIMEOUT_MS,
+);
+
+test(
+	"shell init --shell-rc writes to custom path",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		const customRc = join(home, "custom.zsh");
+
+		await writeFile(customRc, "# custom rc\n");
+
+		await runShellInitInHome(home, ["--shell-rc", customRc]);
+
+		const contents = await readFile(customRc, "utf8");
+		expect(contents).toContain("# custom rc");
+		expect(contents).toContain("jaynalerts begin");
+
+		const defaultRc = join(home, ".zshrc");
+		await expect(stat(defaultRc)).rejects.toThrow();
+	},
+	INIT_TIMEOUT_MS,
+);
+
+test(
+	"shell init preserves symlink target",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		const realFile = join(home, "real.zshrc");
+		const linkFile = join(home, ".zshrc");
+
+		await writeFile(realFile, "# real rc\n");
+		await symlink(realFile, linkFile);
+
+		await runShellInitInHome(home, ["--shell-rc", linkFile]);
+
+		expect((await lstat(linkFile)).isSymbolicLink()).toBe(true);
+		expect(await readlink(linkFile)).toBe(realFile);
+
+		const realContents = await readFile(realFile, "utf8");
+		expect(realContents).toContain("# real rc");
+		expect(realContents).toContain("jaynalerts begin");
+	},
+	INIT_TIMEOUT_MS,
+);
+
+test(
+	"claude code init upgrades existing notification hook matcher",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		const settingsFile = join(home, ".claude", "settings.json");
+		await mkdir(join(home, ".claude"));
+
+		await writeFile(
+			settingsFile,
+			JSON.stringify(
+				{
+					hooks: {
+						Notification: [
+							{
+								hooks: [
+									{
+										command: "jaynalerts claude-code-hook on-notification",
+										type: "command",
+									},
+								],
+							},
+						],
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		await runClaudeCodeInitInHome(home);
+
+		const settings = JSON.parse(await readFile(settingsFile, "utf8"));
+		const notificationGroup = settings.hooks.Notification[0];
+		expect(notificationGroup.matcher).toBe("permission_prompt");
+		expect(notificationGroup.hooks).toEqual([
+			{
+				command: "jaynalerts claude-code-hook on-notification",
+				type: "command",
+			},
+		]);
+	},
+	INIT_TIMEOUT_MS,
+);
+
+test(
+	"codex init installs notify without disturbing config and is idempotent",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		const codexDir = join(home, ".codex");
+		const configFile = join(codexDir, "config.toml");
+		await mkdir(codexDir);
+		await writeFile(
+			configFile,
+			'model = "gpt-test"\n\n[tui]\nnotifications = true\n',
+		);
+
+		await runCodexInitInHome(home);
+		const first = await readFile(configFile, "utf8");
+		expect(first).toContain('notify = ["jaynalerts", "codex-hook"]');
+		expect(first).toContain('model = "gpt-test"');
+		expect(first).toContain("[tui]");
+
+		await runCodexInitInHome(home);
+		expect(await readFile(configFile, "utf8")).toBe(first);
+	},
+	INIT_TIMEOUT_MS,
+);
+
+test(
+	"codex init installs the approval hook and is idempotent",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		const codexDir = join(home, ".codex");
+		const hooksFile = join(codexDir, "hooks.json");
+		await mkdir(codexDir);
+		await writeFile(
+			hooksFile,
+			`${JSON.stringify(
+				{
+					hooks: {
+						SessionStart: [{ hooks: [{ type: "command", command: "mine" }] }],
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		await runCodexInitInHome(home);
+		const first = JSON.parse(await readFile(hooksFile, "utf8"));
+		expect(first.hooks.SessionStart).toEqual([
+			{ hooks: [{ type: "command", command: "mine" }] },
+		]);
+		expect(first.hooks.PermissionRequest).toEqual([
+			{
+				matcher: "*",
+				hooks: [
+					{
+						type: "command",
+						command: "jaynalerts codex-hook on-permission-request",
+						async: true,
+					},
+				],
+			},
+		]);
+
+		await runCodexInitInHome(home);
+		expect(JSON.parse(await readFile(hooksFile, "utf8"))).toEqual(first);
+	},
+	INIT_TIMEOUT_MS,
+);
+
+test(
+	"codex init creates hooks.json when none exists",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		await mkdir(join(home, ".codex"));
+
+		await runCodexInitInHome(home);
+		const document = JSON.parse(
+			await readFile(join(home, ".codex", "hooks.json"), "utf8"),
+		);
+		expect(document.hooks.PermissionRequest[0].hooks[0].command).toBe(
+			"jaynalerts codex-hook on-permission-request",
+		);
+	},
+	INIT_TIMEOUT_MS,
+);
+
+async function runShellInitInHome(
+	home: string,
+	extraArgs: string[] = ["--shell"],
+): Promise<void> {
+	const proc = Bun.spawn(
+		[process.execPath, "run", "src/cli/index.ts", "init", ...extraArgs],
+		{
+			cwd: process.cwd(),
+			env: { ...process.env, HOME: home },
+			stderr: "pipe",
+			stdout: "pipe",
+		},
+	);
+
+	const [exitCode, stdout, stderr] = await Promise.all([
+		proc.exited,
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+	]);
+
+	if (exitCode !== 0) {
+		throw new Error(
+			`shell init failed with exit ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+		);
+	}
+}
+
+async function runInitInHome(home: string): Promise<void> {
+	const proc = Bun.spawn(
+		[process.execPath, "run", "src/cli/index.ts", "init", "--opencode"],
+		{
+			cwd: process.cwd(),
+			env: { ...process.env, HOME: home },
+			stderr: "pipe",
+			stdout: "pipe",
+		},
+	);
+
+	const [exitCode, stdout, stderr] = await Promise.all([
+		proc.exited,
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+	]);
+
+	if (exitCode !== 0) {
+		throw new Error(
+			`init failed with exit ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+		);
+	}
+}
+
+async function runClaudeCodeInitInHome(home: string): Promise<void> {
+	const proc = Bun.spawn(
+		[process.execPath, "run", "src/cli/index.ts", "init", "--claude-code"],
+		{
+			cwd: process.cwd(),
+			env: { ...process.env, HOME: home },
+			stderr: "pipe",
+			stdout: "pipe",
+		},
+	);
+
+	const [exitCode, stdout, stderr] = await Promise.all([
+		proc.exited,
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+	]);
+
+	if (exitCode !== 0) {
+		throw new Error(
+			`claude code init failed with exit ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+		);
+	}
+}
+
+async function runCodexInitInHome(home: string): Promise<void> {
+	const proc = Bun.spawn(
+		[process.execPath, "run", "src/cli/index.ts", "init", "--codex"],
+		{
+			cwd: process.cwd(),
+			env: { ...process.env, HOME: home, CODEX_HOME: join(home, ".codex") },
+			stderr: "pipe",
+			stdout: "pipe",
+		},
+	);
+	const [exitCode, stderr] = await Promise.all([
+		proc.exited,
+		new Response(proc.stderr).text(),
+	]);
+	if (exitCode !== 0) throw new Error(`codex init failed: ${stderr}`);
+}
