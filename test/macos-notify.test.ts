@@ -8,12 +8,14 @@ import { macosNotifier } from "../src/core/notify/macos.ts";
 const originalSpawn = Bun.spawn;
 const originalWarn = console.warn;
 const originalHome = process.env.JAYNALERTS_HOME;
+const originalDebug = process.env.JAYNALERTS_DEBUG;
 
 let notifierBin: string;
 
 beforeEach(async () => {
 	const home = await mkdtemp(join(tmpdir(), "jaynalerts-macos-"));
 	process.env.JAYNALERTS_HOME = home;
+	delete process.env.JAYNALERTS_DEBUG;
 	notifierBin = join(
 		home,
 		"Applications",
@@ -33,6 +35,11 @@ afterEach(() => {
 		delete process.env.JAYNALERTS_HOME;
 	} else {
 		process.env.JAYNALERTS_HOME = originalHome;
+	}
+	if (originalDebug === undefined) {
+		delete process.env.JAYNALERTS_DEBUG;
+	} else {
+		process.env.JAYNALERTS_DEBUG = originalDebug;
 	}
 });
 
@@ -85,6 +92,18 @@ test("macOS notifier sends sticky alerts with --sticky and forwards host/icon", 
 		senderBundleId: "com.example.term",
 		appIconPath: "/tmp/icon.png",
 		subtitle: "ctx",
+		tmuxOrigin: {
+			socketPath: "/tmp/tmux-501/default",
+			paneId: "%42",
+			sessionName: "agent",
+			windowId: "@8",
+			windowIndex: "4",
+			windowName: "codex",
+			paneIndex: "1",
+			clientTty: "/dev/ttys002",
+			originKey: "tmux:/tmp/tmux-501/default:%42",
+		},
+		tmuxZoomOnClick: true,
 	});
 
 	expect(argv).toEqual([
@@ -99,6 +118,25 @@ test("macOS notifier sends sticky alerts with --sticky and forwards host/icon", 
 		"/tmp/icon.png",
 		"--host",
 		"com.example.term",
+		"--pane",
+		"%42",
+		"--tmux-socket",
+		"/tmp/tmux-501/default",
+		"--tmux-client",
+		"/dev/ttys002",
+		"--tmux-session",
+		"agent",
+		"--tmux-window",
+		"@8",
+		"--tmux-window-index",
+		"4",
+		"--tmux-window-name",
+		"codex",
+		"--tmux-pane-index",
+		"1",
+		"--origin-key",
+		"tmux:/tmp/tmux-501/default:%42",
+		"--zoom-on-click",
 		"--sticky",
 	]);
 });

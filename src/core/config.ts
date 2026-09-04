@@ -7,6 +7,7 @@ export type Config = {
 	notifications: {
 		transientSound: string | null;
 		stickySound: string;
+		tmuxZoomOnClick: boolean;
 		iconClaudeCode: string | null;
 		iconCodex: string | null;
 		iconOpencode: string | null;
@@ -21,6 +22,7 @@ export const DEFAULT_CONFIG: Config = {
 	notifications: {
 		transientSound: null,
 		stickySound: "default",
+		tmuxZoomOnClick: true,
 		iconClaudeCode: null,
 		iconCodex: null,
 		iconOpencode: null,
@@ -147,6 +149,11 @@ function mergeNotificationsConfig(
 			table.stickySound,
 			DEFAULT_CONFIG.notifications.stickySound,
 		),
+		tmuxZoomOnClick: booleanOrDefault(
+			"notifications.tmuxZoomOnClick",
+			table.tmuxZoomOnClick,
+			DEFAULT_CONFIG.notifications.tmuxZoomOnClick,
+		),
 		iconClaudeCode: nullableStringOrDefault(
 			"notifications.iconClaudeCode",
 			table.iconClaudeCode,
@@ -224,6 +231,22 @@ function stringOrDefault(
 
 	if (typeof value !== "string") {
 		throw new Error(`${path} must be a string`);
+	}
+
+	return value;
+}
+
+function booleanOrDefault(
+	path: string,
+	value: TomlValueWithoutBigInt | undefined,
+	fallback: boolean,
+): boolean {
+	if (value === undefined) {
+		return fallback;
+	}
+
+	if (typeof value !== "boolean") {
+		throw new Error(`${path} must be a boolean`);
 	}
 
 	return value;

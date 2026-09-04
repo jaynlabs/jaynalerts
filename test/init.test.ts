@@ -43,6 +43,18 @@ test(
 		const source = await readFile("examples/opencode-plugin.ts", "utf8");
 
 		expect(await readFile(target, "utf8")).toBe(source);
+		const notifierPlist = await readFile(
+			join(
+				home,
+				"Applications",
+				"JaynAlertsNotifier.app",
+				"Contents",
+				"Info.plist",
+			),
+			"utf8",
+		);
+		expect(notifierPlist).toContain("NSUserNotificationAlertStyle");
+		expect(notifierPlist).toContain("<string>alert</string>");
 		const firstStat = await stat(target);
 
 		await runInitInHome(home);

@@ -15,6 +15,7 @@ Commands:
                               Trigger this terminal's macOS notification permission prompt
                               (run once per terminal app you use)
   test                        Fire one transient + one sticky notification
+  doctor                      Inspect each notifier's macOS notification settings
   claude-code-hook <event>    Internal: invoked by Claude Code hooks
   codex-hook <json|on-permission-request>
                               Internal: invoked by Codex notify and hooks
@@ -43,6 +44,12 @@ async function main(): Promise<void> {
 	if (command === "test") {
 		const { runTest } = await import("./test.ts");
 		await runTest();
+		return;
+	}
+
+	if (command === "doctor") {
+		const { runDoctor } = await import("./doctor.ts");
+		await runDoctor();
 		return;
 	}
 

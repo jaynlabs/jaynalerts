@@ -2,6 +2,18 @@ export type Source = "claude-code" | "codex" | "ghostty" | "opencode";
 
 export type NotifyUrgency = "transient" | "sticky";
 
+export type TmuxNotificationOrigin = {
+	socketPath?: string;
+	paneId: string;
+	sessionName?: string;
+	windowId?: string;
+	windowIndex?: string;
+	windowName?: string;
+	paneIndex?: string;
+	clientTty?: string;
+	originKey: string;
+};
+
 export type NotifyOptions = {
 	source?: Source;
 	title: string;
@@ -9,7 +21,8 @@ export type NotifyOptions = {
 	subtitle?: string;
 	appIconPath?: string;
 	senderBundleId?: string;
-	tmuxPane?: string;
+	tmuxOrigin?: TmuxNotificationOrigin;
+	tmuxZoomOnClick?: boolean;
 	sound?: string;
 	urgency: NotifyUrgency;
 };

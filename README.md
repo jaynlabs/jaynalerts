@@ -41,6 +41,7 @@ To uninstall the global link: `make uninstall`.
 jaynalerts init                  # Codex + Claude Code + opencode (no shell hook)
 jaynalerts init --shell          # also install the zsh hook into ~/.zshrc
 jaynalerts test                  # fire one transient + one sticky banner
+jaynalerts doctor                # inspect each notifier's macOS alert settings
 jaynalerts grant-terminal-notifications
                                  # run once per terminal app (Terminal, iTerm, Ghostty…)
                                  # to trigger macOS' notification-permission prompt
@@ -55,6 +56,7 @@ If banners don't appear, open **System Settings → Notifications → JaynAlerts
 | `init [--claude-code] [--codex] [--opencode] [--shell] [--shell-rc PATH]` | Install hooks/plugin/shell wrapper. With no flags, installs all three agent integrations. |
 | `grant-terminal-notifications` | Prompt the current terminal app for macOS notification permission. |
 | `test` | Send one transient and one sticky notification. |
+| `doctor` | Report authorization and Temporary/Persistent style for every notifier bundle. |
 | `claude-code-hook <on-stop\|on-notification>` | Internal — invoked by Claude Code. |
 | `codex-hook <json\|on-permission-request>` | Internal — invoked by Codex. |
 | `notify-command --cmd C --exit N --duration-ms N` | Internal — invoked by the zsh hook. |
@@ -70,6 +72,7 @@ Configuration lives at `~/.config/jaynalerts/config.toml` (respects `XDG_CONFIG_
 # stickySound:    sound for sticky banners (default: "default")
 # transientSound: sound for transient banners (default: none — omit the key)
 stickySound = "default"
+tmuxZoomOnClick = true            # zoom the originating pane when its banner is clicked
 # icon*: absolute paths overriding the bundled assets/*.png
 # iconClaudeCode = "/absolute/path/to/icon.png"
 # iconCodex      = "/absolute/path/to/icon.png"
@@ -88,9 +91,9 @@ jaynalerts decides between transient and sticky banners using a small Swift help
 
 1. The bundle ID of the terminal hosting the current shell (via the process tree, falling back to the tmux client PID).
 2. The frontmost app's bundle ID.
-3. Under tmux, whether the active pane matches `$TMUX_PANE` of the calling process.
+3. Under tmux, the originating socket, session, window, pane, and attached client.
 
-If host == frontmost (and the tmux pane matches), the terminal is considered focused → **transient**. Otherwise → **sticky**.
+If host == frontmost and the only attached tmux client is showing the originating pane, the terminal is considered focused → **transient**. Otherwise → **sticky**. Ambiguous multi-client cases deliberately stay sticky because macOS exposes the frontmost app, not its exact terminal window.
 
 ## Notifications on macOS
 
@@ -99,6 +102,9 @@ Banners are sent through `JaynAlertsNotifier.app`, built and code-signed (ad-hoc
 - Icons live in `assets/` as `notifier.png`, `claude-code.png`, `codex.png`, `ghostty.icns`, and `opencode.png` (`.png` and `.icns` are both accepted).
 - Per-user icon overrides via the `iconClaudeCode` / `iconCodex` / `iconOpencode` config keys.
 - Run `jaynalerts grant-terminal-notifications` once per terminal emulator you use, so macOS associates the permission with that terminal.
+- Sticky notifications require **Persistent** alerts. New bundles request that default; run `jaynalerts doctor` to see the effective setting and change any **Temporary** entry in System Settings → Notifications.
+- A tmux notification carries its own origin, so concurrent sessions each route to their own pane. Clicking one switches the captured client to the exact pane and, by default, zooms that pane. Set `tmuxZoomOnClick = false` to keep the normal split layout.
+- If the originating pane is gone by the time you click, the notification only brings the terminal forward — it never redirects a client to some other session.
 
 ## Claude Code setup
 

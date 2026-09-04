@@ -39,8 +39,20 @@ async function notify(opts: NotifyOptions): Promise<void> {
 		argv.push("--host", opts.senderBundleId);
 	}
 
-	if (opts.tmuxPane !== undefined && opts.tmuxPane !== "") {
-		argv.push("--pane", opts.tmuxPane);
+	const origin = opts.tmuxOrigin;
+	if (origin !== undefined) {
+		argv.push("--pane", origin.paneId);
+		pushArg(argv, "--tmux-socket", origin.socketPath);
+		pushArg(argv, "--tmux-client", origin.clientTty);
+		pushArg(argv, "--tmux-session", origin.sessionName);
+		pushArg(argv, "--tmux-window", origin.windowId);
+		pushArg(argv, "--tmux-window-index", origin.windowIndex);
+		pushArg(argv, "--tmux-window-name", origin.windowName);
+		pushArg(argv, "--tmux-pane-index", origin.paneIndex);
+		pushArg(argv, "--origin-key", origin.originKey);
+		if (opts.tmuxZoomOnClick === true) {
+			argv.push("--zoom-on-click");
+		}
 	}
 
 	if (opts.sound !== undefined) {
@@ -54,8 +66,9 @@ async function notify(opts: NotifyOptions): Promise<void> {
 	}
 
 	try {
+		const debug = process.env.JAYNALERTS_DEBUG !== undefined;
 		const proc = Bun.spawn(argv, {
-			stdio: ["ignore", "ignore", "ignore"],
+			stdio: ["ignore", "ignore", debug ? "inherit" : "ignore"],
 		});
 		proc.unref();
 	} catch (error) {
@@ -64,6 +77,16 @@ async function notify(opts: NotifyOptions): Promise<void> {
 			return;
 		}
 		throw error;
+	}
+}
+
+function pushArg(
+	argv: string[],
+	flag: string,
+	value: string | undefined,
+): void {
+	if (value !== undefined && value !== "") {
+		argv.push(flag, value);
 	}
 }
 

@@ -13,7 +13,19 @@ var soundName: String?
 var sticky = false
 var transientSeconds: Double = 5
 var hostBundle: String?
+var tmuxSocket: String?
 var tmuxPane: String?
+var tmuxClient: String?
+var tmuxSession: String?
+var tmuxWindow: String?
+var tmuxWindowIndex: String?
+var tmuxWindowName: String?
+var tmuxPaneIndex: String?
+var originKey: String?
+var zoomOnClick = false
+var reportSettings = false
+var reportOrigin = false
+var routePayload: String?
 
 var i = 1
 let args = CommandLine.arguments
@@ -41,8 +53,44 @@ while i < args.count {
 	case "--host":
 		hostBundle = next(1)
 		i += 2
+	case "--tmux-socket":
+		tmuxSocket = next(1)
+		i += 2
 	case "--pane":
 		tmuxPane = next(1)
+		i += 2
+	case "--tmux-client":
+		tmuxClient = next(1)
+		i += 2
+	case "--tmux-session":
+		tmuxSession = next(1)
+		i += 2
+	case "--tmux-window":
+		tmuxWindow = next(1)
+		i += 2
+	case "--tmux-window-index":
+		tmuxWindowIndex = next(1)
+		i += 2
+	case "--tmux-window-name":
+		tmuxWindowName = next(1)
+		i += 2
+	case "--tmux-pane-index":
+		tmuxPaneIndex = next(1)
+		i += 2
+	case "--origin-key":
+		originKey = next(1)
+		i += 2
+	case "--zoom-on-click":
+		zoomOnClick = true
+		i += 1
+	case "--settings":
+		reportSettings = true
+		i += 1
+	case "--print-origin":
+		reportOrigin = true
+		i += 1
+	case "--route":
+		routePayload = next(1)
 		i += 2
 	case "--sticky":
 		sticky = true
@@ -58,27 +106,126 @@ while i < args.count {
 }
 
 let identifier = UUID().uuidString
-let center = UNUserNotificationCenter.current()
+
+// Resolved on demand: UNUserNotificationCenter.current() traps outside an app
+// bundle, and the routing diagnostics below deliberately run without one.
+var center: UNUserNotificationCenter { .current() }
+
+struct NotificationOrigin {
+	let hostBundle: String?
+	let tmuxSocket: String?
+	let tmuxPane: String?
+	let tmuxClient: String?
+	let tmuxSession: String?
+	let tmuxWindow: String?
+	let tmuxWindowIndex: String?
+	let tmuxWindowName: String?
+	let tmuxPaneIndex: String?
+	let originKey: String?
+	let zoomOnClick: Bool
+
+	init(
+		hostBundle: String? = nil,
+		tmuxSocket: String? = nil,
+		tmuxPane: String? = nil,
+		tmuxClient: String? = nil,
+		tmuxSession: String? = nil,
+		tmuxWindow: String? = nil,
+		tmuxWindowIndex: String? = nil,
+		tmuxWindowName: String? = nil,
+		tmuxPaneIndex: String? = nil,
+		originKey: String? = nil,
+		zoomOnClick: Bool = false
+	) {
+		self.hostBundle = hostBundle
+		self.tmuxSocket = tmuxSocket
+		self.tmuxPane = tmuxPane
+		self.tmuxClient = tmuxClient
+		self.tmuxSession = tmuxSession
+		self.tmuxWindow = tmuxWindow
+		self.tmuxWindowIndex = tmuxWindowIndex
+		self.tmuxWindowName = tmuxWindowName
+		self.tmuxPaneIndex = tmuxPaneIndex
+		self.originKey = originKey
+		self.zoomOnClick = zoomOnClick
+	}
+
+	init(userInfo: [AnyHashable: Any]) {
+		hostBundle = userInfo["hostBundle"] as? String
+		tmuxSocket = userInfo["tmuxSocket"] as? String
+		tmuxPane = userInfo["tmuxPane"] as? String
+		tmuxClient = userInfo["tmuxClient"] as? String
+		tmuxSession = userInfo["tmuxSession"] as? String
+		tmuxWindow = userInfo["tmuxWindow"] as? String
+		tmuxWindowIndex = userInfo["tmuxWindowIndex"] as? String
+		tmuxWindowName = userInfo["tmuxWindowName"] as? String
+		tmuxPaneIndex = userInfo["tmuxPaneIndex"] as? String
+		originKey = userInfo["originKey"] as? String
+		zoomOnClick = (userInfo["zoomOnClick"] as? NSNumber)?.boolValue ?? false
+	}
+
+	func userInfo() -> [AnyHashable: Any] {
+		var info: [AnyHashable: Any] = [
+			"originVersion": 1,
+			"zoomOnClick": zoomOnClick,
+		]
+		if let hostBundle { info["hostBundle"] = hostBundle }
+		if let tmuxSocket { info["tmuxSocket"] = tmuxSocket }
+		if let tmuxPane { info["tmuxPane"] = tmuxPane }
+		if let tmuxClient { info["tmuxClient"] = tmuxClient }
+		if let tmuxSession { info["tmuxSession"] = tmuxSession }
+		if let tmuxWindow { info["tmuxWindow"] = tmuxWindow }
+		if let tmuxWindowIndex { info["tmuxWindowIndex"] = tmuxWindowIndex }
+		if let tmuxWindowName { info["tmuxWindowName"] = tmuxWindowName }
+		if let tmuxPaneIndex { info["tmuxPaneIndex"] = tmuxPaneIndex }
+		if let originKey { info["originKey"] = originKey }
+		return info
+	}
+}
+
+let argumentOrigin = NotificationOrigin(
+	hostBundle: hostBundle,
+	tmuxSocket: tmuxSocket,
+	tmuxPane: tmuxPane,
+	tmuxClient: tmuxClient,
+	tmuxSession: tmuxSession,
+	tmuxWindow: tmuxWindow,
+	tmuxWindowIndex: tmuxWindowIndex,
+	tmuxWindowName: tmuxWindowName,
+	tmuxPaneIndex: tmuxPaneIndex,
+	originKey: originKey,
+	zoomOnClick: zoomOnClick
+)
 
 func dismissAndExit() {
 	center.removeDeliveredNotifications(withIdentifiers: [identifier])
 	exit(0)
 }
 
-func runTmux(_ args: [String]) {
+func tmuxArguments(socket: String?, command: [String]) -> [String] {
+	["tmux"] + (socket.map { ["-S", $0] } ?? []) + command
+}
+
+@discardableResult
+func runTmux(_ command: [String], socket: String?) -> Bool {
 	let task = Process()
 	task.launchPath = "/usr/bin/env"
-	task.arguments = ["tmux"] + args
+	task.arguments = tmuxArguments(socket: socket, command: command)
 	task.standardOutput = FileHandle.nullDevice
 	task.standardError = FileHandle.nullDevice
-	try? task.run()
-	task.waitUntilExit()
+	do {
+		try task.run()
+		task.waitUntilExit()
+		return task.terminationStatus == 0
+	} catch {
+		return false
+	}
 }
 
-func tmuxWindowId(forPane pane: String) -> String? {
+func readTmux(_ command: [String], socket: String?) -> String? {
 	let task = Process()
 	task.launchPath = "/usr/bin/env"
-	task.arguments = ["tmux", "display", "-p", "-t", pane, "#{window_id}"]
+	task.arguments = tmuxArguments(socket: socket, command: command)
 	let pipe = Pipe()
 	task.standardOutput = pipe
 	task.standardError = FileHandle.nullDevice
@@ -88,43 +235,113 @@ func tmuxWindowId(forPane pane: String) -> String? {
 	} catch {
 		return nil
 	}
+	guard task.terminationStatus == 0 else { return nil }
 	let data = pipe.fileHandleForReading.readDataToEndOfFile()
 	let out = String(data: data, encoding: .utf8)?
 		.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 	return out.isEmpty ? nil : out
 }
 
-func currentTmuxPane() -> String? {
-	let task = Process()
-	task.launchPath = "/usr/bin/env"
-	task.arguments = ["tmux", "display", "-p", "#{pane_id}"]
-	let pipe = Pipe()
-	task.standardOutput = pipe
-	task.standardError = FileHandle.nullDevice
-	do {
-		try task.run()
-		task.waitUntilExit()
-	} catch {
-		return nil
+func currentTmuxPane(origin: NotificationOrigin) -> String? {
+	guard let client = origin.tmuxClient else { return nil }
+	let separator = "\u{1F}"
+	guard
+		let clients = readTmux(
+			[
+				"list-clients", "-F",
+				"#{client_tty}\(separator)#{pane_id}",
+			],
+			socket: origin.tmuxSocket
+		)
+	else { return nil }
+	for line in clients.split(separator: "\n") {
+		let fields = line.split(separator: Character(separator), maxSplits: 1)
+		if fields.count == 2, String(fields[0]) == client {
+			return String(fields[1])
+		}
 	}
-	let data = pipe.fileHandleForReading.readDataToEndOfFile()
-	let out = String(data: data, encoding: .utf8)?
-		.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-	return out.isEmpty ? nil : out
+	return nil
+}
+
+func ensurePaneZoomed(origin: NotificationOrigin) {
+	guard origin.zoomOnClick, let pane = origin.tmuxPane else { return }
+	guard
+		let state = readTmux(
+			[
+				"display-message", "-p", "-t", pane,
+				"#{window_zoomed_flag} #{window_panes}",
+			],
+			socket: origin.tmuxSocket
+		)
+	else { return }
+	let fields = state.split(separator: " ")
+	guard fields.count == 2 else { return }
+	let isZoomed = fields[0] == "1"
+	let paneCount = Int(fields[1]) ?? 1
+	if !isZoomed && paneCount > 1 {
+		runTmux(["resize-pane", "-Z", "-t", pane], socket: origin.tmuxSocket)
+	}
+}
+
+func paneIsAlive(_ origin: NotificationOrigin) -> Bool {
+	guard let pane = origin.tmuxPane else { return false }
+	return readTmux(
+		["display-message", "-p", "-t", pane, "#{pane_id}"],
+		socket: origin.tmuxSocket
+	) == pane
+}
+
+func routeToTmuxOrigin(_ origin: NotificationOrigin) {
+	guard let pane = origin.tmuxPane else { return }
+	// If the pane is gone, stop here instead of letting tmux resolve the stale
+	// target to whatever session happens to be current.
+	guard paneIsAlive(origin) else { return }
+	var switched = false
+	if let client = origin.tmuxClient {
+		switched = runTmux(
+			["switch-client", "-Z", "-c", client, "-t", pane],
+			socket: origin.tmuxSocket
+		)
+	}
+	if !switched {
+		_ = runTmux(["select-window", "-t", pane], socket: origin.tmuxSocket)
+		_ = runTmux(["select-pane", "-t", pane], socket: origin.tmuxSocket)
+	}
+	ensurePaneZoomed(origin: origin)
+}
+
+// Internal diagnostics: --print-origin dumps the payload a notification would
+// carry, --route replays one exactly as clicking that notification does.
+if reportOrigin {
+	guard
+		let data = try? JSONSerialization.data(
+			withJSONObject: argumentOrigin.userInfo(), options: [.sortedKeys]
+		),
+		let output = String(data: data, encoding: .utf8)
+	else { exit(4) }
+	print(output)
+	exit(0)
+}
+
+if let routePayload {
+	guard let data = routePayload.data(using: .utf8),
+		let userInfo = try? JSONSerialization.jsonObject(with: data)
+			as? [AnyHashable: Any]
+	else { exit(4) }
+	routeToTmuxOrigin(NotificationOrigin(userInfo: userInfo))
+	exit(0)
 }
 
 final class Watcher {
-	let host: String
-	let pane: String?
+	let origin: NotificationOrigin
 	var timer: DispatchSourceTimer?
 
-	init(host: String, pane: String?) {
-		self.host = host
-		self.pane = pane
+	init(origin: NotificationOrigin) {
+		self.origin = origin
 	}
 
 	func onActivation(_ bundleId: String?) {
-		guard let bundleId = bundleId else { return }
+		guard let bundleId, let host = origin.hostBundle else { return }
 		if bundleId == host {
 			handleHostFrontmost()
 		} else {
@@ -133,24 +350,25 @@ final class Watcher {
 	}
 
 	private func handleHostFrontmost() {
-		guard let targetPane = pane else {
+		guard let targetPane = origin.tmuxPane else {
 			dismissAndExit()
 			return
 		}
+		guard origin.tmuxClient != nil else { return }
 		startPolling(targetPane: targetPane)
 	}
 
 	private func startPolling(targetPane: String) {
 		if timer != nil { return }
-		let t = DispatchSource.makeTimerSource(queue: .main)
-		t.schedule(deadline: .now(), repeating: PANE_POLL_INTERVAL)
-		t.setEventHandler {
-			if let now = currentTmuxPane(), now == targetPane {
+		let timer = DispatchSource.makeTimerSource(queue: .main)
+		timer.schedule(deadline: .now(), repeating: PANE_POLL_INTERVAL)
+		timer.setEventHandler { [origin] in
+			if currentTmuxPane(origin: origin) == targetPane {
 				dismissAndExit()
 			}
 		}
-		t.resume()
-		timer = t
+		timer.resume()
+		self.timer = timer
 	}
 
 	private func stopPolling() {
@@ -159,17 +377,11 @@ final class Watcher {
 	}
 }
 
-let watcher: Watcher? = sticky ? hostBundle.map { Watcher(host: $0, pane: tmuxPane) } : nil
+let watcher: Watcher? = sticky && hostBundle != nil
+	? Watcher(origin: argumentOrigin)
+	: nil
 
 final class Delegate: NSObject, UNUserNotificationCenterDelegate {
-	let hostBundle: String?
-	let tmuxPane: String?
-
-	init(hostBundle: String?, tmuxPane: String?) {
-		self.hostBundle = hostBundle
-		self.tmuxPane = tmuxPane
-	}
-
 	func userNotificationCenter(
 		_ center: UNUserNotificationCenter,
 		willPresent notification: UNNotification
@@ -181,14 +393,11 @@ final class Delegate: NSObject, UNUserNotificationCenterDelegate {
 		_ center: UNUserNotificationCenter,
 		didReceive response: UNNotificationResponse
 	) async {
-		if let pane = tmuxPane {
-			let windowId = tmuxWindowId(forPane: pane)
-			if let windowId = windowId {
-				runTmux(["select-window", "-t", windowId])
-			}
-			runTmux(["select-pane", "-t", pane])
-		}
-		if let bundle = hostBundle,
+		let origin = NotificationOrigin(
+			userInfo: response.notification.request.content.userInfo
+		)
+		routeToTmuxOrigin(origin)
+		if let bundle = origin.hostBundle,
 			let url = NSWorkspace.shared.urlForApplication(
 				withBundleIdentifier: bundle
 			)
@@ -203,7 +412,7 @@ final class Delegate: NSObject, UNUserNotificationCenterDelegate {
 	}
 }
 
-let delegate = Delegate(hostBundle: hostBundle, tmuxPane: tmuxPane)
+let delegate = Delegate()
 center.delegate = delegate
 
 if watcher != nil {
@@ -216,6 +425,64 @@ if watcher != nil {
 			as? NSRunningApplication
 		watcher?.onActivation(app?.bundleIdentifier)
 	}
+}
+
+func authorizationDescription(_ rawValue: Int) -> String {
+	switch rawValue {
+	case 0: return "notDetermined"
+	case 1: return "denied"
+	case 2: return "authorized"
+	case 3: return "provisional"
+	case 4: return "ephemeral"
+	default: return "unknown"
+	}
+}
+
+func alertStyleDescription(_ style: UNAlertStyle) -> String {
+	switch style {
+	case .none: return "none"
+	case .banner: return "temporary"
+	case .alert: return "persistent"
+	@unknown default: return "unknown"
+	}
+}
+
+func notificationSettingDescription(_ setting: UNNotificationSetting) -> String {
+	switch setting {
+	case .notSupported: return "notSupported"
+	case .disabled: return "disabled"
+	case .enabled: return "enabled"
+	@unknown default: return "unknown"
+	}
+}
+
+@MainActor
+func printNotificationSettings() async {
+	let settings = await center.notificationSettings()
+	let report: [String: Any] = [
+		"authorization": authorizationDescription(
+			settings.authorizationStatus.rawValue
+		),
+		"alertStyle": alertStyleDescription(settings.alertStyle),
+		"alerts": notificationSettingDescription(settings.alertSetting),
+		"requestedAlertStyle": Bundle.main.object(
+			forInfoDictionaryKey: "NSUserNotificationAlertStyle"
+		) as? String ?? "banner",
+	]
+	if let data = try? JSONSerialization.data(withJSONObject: report),
+		let output = String(data: data, encoding: .utf8)
+	{
+		print(output)
+		exit(0)
+	}
+	exit(4)
+}
+
+func debugLog(_ message: String) {
+	guard ProcessInfo.processInfo.environment["JAYNALERTS_DEBUG"] != nil else {
+		return
+	}
+	FileHandle.standardError.write(Data("jaynalerts-notifier: \(message)\n".utf8))
 }
 
 @MainActor
@@ -239,7 +506,7 @@ func postNotification() async {
 
 	let content = UNMutableNotificationContent()
 	content.title = title
-	if let subtitle = subtitle, !subtitle.isEmpty {
+	if let subtitle, !subtitle.isEmpty {
 		content.subtitle = subtitle
 	}
 	content.body = body
@@ -249,10 +516,10 @@ func postNotification() async {
 			? .default
 			: UNNotificationSound(named: UNNotificationSoundName(name))
 	}
-	if let iconPath = iconPath, !iconPath.isEmpty {
+	if let iconPath, !iconPath.isEmpty {
 		let original = URL(fileURLWithPath: iconPath)
 		let staged = stageIcon(at: original, identifier: identifier)
-		if let staged = staged,
+		if let staged,
 			let attachment = try? UNNotificationAttachment(
 				identifier: "icon", url: staged, options: nil
 			)
@@ -260,8 +527,9 @@ func postNotification() async {
 			content.attachments = [attachment]
 		}
 	}
-	if let host = hostBundle {
-		content.userInfo = ["hostBundle": host]
+	content.userInfo = argumentOrigin.userInfo()
+	if let originKey, !originKey.isEmpty {
+		content.threadIdentifier = originKey
 	}
 
 	let request = UNNotificationRequest(
@@ -276,6 +544,12 @@ func postNotification() async {
 		))
 		exit(3)
 	}
+
+	debugLog(
+		"request=\(identifier) urgency=\(sticky ? "sticky" : "transient") "
+			+ "origin=\(originKey ?? "none") pane=\(tmuxPane ?? "none") "
+			+ "client=\(tmuxClient ?? "none")"
+	)
 
 	if !sticky {
 		DispatchQueue.main.asyncAfter(deadline: .now() + transientSeconds) {
@@ -304,7 +578,11 @@ func stageIcon(at source: URL, identifier: String) -> URL? {
 }
 
 Task { @MainActor in
-	await postNotification()
+	if reportSettings {
+		await printNotificationSettings()
+	} else {
+		await postNotification()
+	}
 }
 
 RunLoop.main.run()

@@ -1,6 +1,6 @@
 import type { Config } from "./config.ts";
 import { loadConfig } from "./config.ts";
-import { getHostBundleId, isTerminalFocused } from "./focus.ts";
+import { resolveNotificationContext, tmuxOriginSubtitle } from "./focus.ts";
 import { notify } from "./notify/index.ts";
 import type { Paths } from "./paths.ts";
 import { resolvePaths } from "./paths.ts";
@@ -14,7 +14,12 @@ export { DEFAULT_CONFIG, loadConfig } from "./config.ts";
 export type { Notifier } from "./notify/types.ts";
 export type { Paths } from "./paths.ts";
 export { resolvePaths } from "./paths.ts";
-export type { NotifyOptions, NotifyUrgency, Source } from "./types.ts";
+export type {
+	NotifyOptions,
+	NotifyUrgency,
+	Source,
+	TmuxNotificationOrigin,
+} from "./types.ts";
 
 export type Context = {
 	paths: Paths;
@@ -39,26 +44,29 @@ export async function notifyUser(
 		source?: Source;
 	},
 ): Promise<void> {
-	const [focus, hostBundleId] = await Promise.all([
-		isTerminalFocused(),
-		getHostBundleId(),
-	]);
+	const focus = await resolveNotificationContext();
 	const urgency: NotifyUrgency = focus.focused ? "transient" : "sticky";
 	const sound =
 		urgency === "transient"
 			? (ctx.config.notifications.transientSound ?? undefined)
 			: ctx.config.notifications.stickySound;
 
-	const tmuxPane = process.env.TMUX_PANE;
+	const tmuxOrigin = focus.tmuxOrigin;
 
 	await notify({
 		...(opts.source ? { source: opts.source } : {}),
 		title: opts.title,
 		message: opts.message,
+		...(tmuxOrigin ? { subtitle: tmuxOriginSubtitle(tmuxOrigin) } : {}),
 		sound,
 		urgency,
 		...(opts.iconPath ? { appIconPath: opts.iconPath } : {}),
-		...(hostBundleId ? { senderBundleId: hostBundleId } : {}),
-		...(tmuxPane ? { tmuxPane } : {}),
+		...(focus.hostBundleId ? { senderBundleId: focus.hostBundleId } : {}),
+		...(tmuxOrigin
+			? {
+					tmuxOrigin,
+					tmuxZoomOnClick: ctx.config.notifications.tmuxZoomOnClick,
+				}
+			: {}),
 	});
 }
