@@ -1,3 +1,4 @@
+import { open } from "node:fs/promises";
 import { basename } from "node:path";
 import { createContext, notifyUser, resolveIcon } from "../core/index.ts";
 
@@ -8,6 +9,14 @@ type CodexNotification = {
 	cwd?: unknown;
 	"last-assistant-message"?: unknown;
 };
+
+const AUTOMATIC_APPROVAL_REVIEWERS = new Set([
+	"auto_review",
+	"guardian_subagent",
+]);
+const JSONL_READ_CHUNK_BYTES = 64 * 1024;
+const MAX_JSONL_RECORD_BYTES = 1024 * 1024;
+const TURN_CONTEXT_MARKER = Buffer.from('"type":"turn_context"');
 
 export async function runCodexHook(argv: string[]): Promise<void> {
 	const [first, ...extraArgs] = argv;
@@ -56,9 +65,124 @@ async function handleLegacyNotify(raw: string): Promise<void> {
 async function handlePermissionRequest(): Promise<void> {
 	const payload = await readPayload();
 	if (payload === null) return;
+	if (!(await permissionRequestNeedsUserAction(payload))) return;
 
 	const cwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
 	await notify(titleWithCwd(cwd), permissionMessage(payload));
+}
+
+export async function permissionRequestNeedsUserAction(
+	payload: Record<string, unknown>,
+): Promise<boolean> {
+	const transcriptPath = nonEmptyString(payload.transcript_path);
+	const turnId = nonEmptyString(payload.turn_id);
+	if (transcriptPath === null || turnId === null) return true;
+
+	try {
+		// PermissionRequest fires before auto-review decides, and its payload does
+		// not identify the reviewer. The matching turn context does.
+		const reviewer = await approvalsReviewerForTurn(transcriptPath, turnId);
+		return reviewer === null || !AUTOMATIC_APPROVAL_REVIEWERS.has(reviewer);
+	} catch (error) {
+		if (process.env.JAYNALERTS_DEBUG) {
+			console.warn(
+				`jaynalerts: could not inspect Codex approval routing: ${errorMessage(error)}`,
+			);
+		}
+		return true;
+	}
+}
+
+async function approvalsReviewerForTurn(
+	transcriptPath: string,
+	turnId: string,
+): Promise<string | null> {
+	const file = await open(transcriptPath, "r");
+
+	try {
+		const { size } = await file.stat();
+		let position = size;
+		let partialLine = Buffer.alloc(0);
+		let discardingOversizedLine = false;
+
+		// Rollouts can be large, so scan complete JSONL records from the end and
+		// avoid loading the whole transcript for every permission request.
+		while (position > 0) {
+			const start = Math.max(0, position - JSONL_READ_CHUNK_BYTES);
+			const chunk = Buffer.alloc(position - start);
+			const { bytesRead } = await file.read(chunk, 0, chunk.length, start);
+			const bytes = chunk.subarray(0, bytesRead);
+			let segmentEnd = bytes.length;
+
+			for (let index = bytes.length - 1; index >= 0; index -= 1) {
+				if (bytes[index] !== 0x0a) continue;
+
+				const segment = bytes.subarray(index + 1, segmentEnd);
+				if (!discardingOversizedLine) {
+					const line = Buffer.concat([segment, partialLine]);
+					const reviewer = reviewerFromTurnContextLine(line, turnId);
+					if (reviewer.matched) return reviewer.value;
+				}
+
+				partialLine = Buffer.alloc(0);
+				discardingOversizedLine = false;
+				segmentEnd = index;
+			}
+
+			const segment = bytes.subarray(0, segmentEnd);
+			if (!discardingOversizedLine) {
+				if (segment.length + partialLine.length > MAX_JSONL_RECORD_BYTES) {
+					partialLine = Buffer.alloc(0);
+					discardingOversizedLine = true;
+				} else {
+					partialLine = Buffer.concat([segment, partialLine]);
+				}
+			}
+
+			position = start;
+		}
+
+		if (!discardingOversizedLine && partialLine.length > 0) {
+			const reviewer = reviewerFromTurnContextLine(partialLine, turnId);
+			if (reviewer.matched) return reviewer.value;
+		}
+
+		return null;
+	} finally {
+		await file.close();
+	}
+}
+
+type ReviewerMatch =
+	| { matched: false }
+	| { matched: true; value: string | null };
+
+function reviewerFromTurnContextLine(
+	line: Buffer,
+	turnId: string,
+): ReviewerMatch {
+	if (!line.includes(TURN_CONTEXT_MARKER)) return { matched: false };
+
+	let record: unknown;
+	try {
+		record = JSON.parse(line.toString("utf8"));
+	} catch {
+		return { matched: false };
+	}
+
+	if (!isRecord(record) || record.type !== "turn_context") {
+		return { matched: false };
+	}
+
+	const turnContext = record.payload;
+	if (!isRecord(turnContext) || turnContext.turn_id !== turnId) {
+		return { matched: false };
+	}
+
+	return {
+		matched: true,
+		value: nonEmptyString(turnContext.approvals_reviewer),
+	};
 }
 
 function permissionMessage(payload: Record<string, unknown>): string {
@@ -139,6 +263,10 @@ function isHookEvent(value: string): value is HookEvent {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | null {
+	return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 function errorMessage(error: unknown): string {

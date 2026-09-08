@@ -7,7 +7,8 @@ A macOS-only CLI that notifies you when your AI coding agent (Codex, Claude Code
 jaynalerts wires up:
 
 - **Claude Code** `Stop` and `Notification` hooks
-- **Codex** `PermissionRequest` hook + `agent-turn-complete` notifications
+- **Codex** human-reviewed `PermissionRequest` hook + `agent-turn-complete`
+  notifications
 - **opencode** plugin events
 - An optional **zsh** `preexec`/`precmd` hook for arbitrary long-running commands
 
@@ -126,7 +127,7 @@ Existing hooks are preserved; a `.jaynalerts.bak` backup is created on first cha
 `jaynalerts init --codex` wires up two separate Codex mechanisms, because neither one covers both cases on its own:
 
 - **`notify` (turn complete)** — sets the user-level `notify` command in `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`) to `jaynalerts codex-hook`. Codex only ever fires this with `agent-turn-complete`, so it cannot tell you about approvals.
-- **`PermissionRequest` hook (approvals)** — writes `~/.codex/hooks.json` with an `async` command hook that runs `jaynalerts codex-hook on-permission-request` whenever Codex asks you to approve a command. The payload arrives as JSON on stdin, the same shape Claude Code uses; the hook only notifies and never writes a decision to stdout, so Codex still prompts you as usual.
+- **`PermissionRequest` hook (approvals)** — writes `~/.codex/hooks.json` with an `async` command hook that runs `jaynalerts codex-hook on-permission-request` whenever Codex requests approval for a command. JaynAlerts checks the matching turn's approval reviewer and skips the banner when Codex auto-review handles the decision; requests routed to you still notify. The payload arrives as JSON on stdin, and the hook only notifies—it never writes a decision to stdout—so Codex still prompts you as usual.
 
 Existing configuration is preserved in both files and a `.jaynalerts.bak` backup is created before the first change.
 
