@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import type { NotifierVariant } from "../core/native.ts";
 import {
-	NOTIFIER_VARIANTS,
+	activeNotifierVariants,
 	notifierStamp,
 	notifierStampFile,
 	readStamp,
@@ -52,11 +52,13 @@ export async function runDoctor(): Promise<void> {
 
 export async function collectNotifierStatuses(
 	paths: Paths = resolvePaths(),
+	variants?: readonly NotifierVariant[],
 ): Promise<NotifierStatus[]> {
 	const expectedStamp = await notifierStamp();
+	const wanted = variants ?? (await activeNotifierVariants());
 	const statuses: NotifierStatus[] = [];
 
-	for (const variant of NOTIFIER_VARIANTS) {
+	for (const variant of wanted) {
 		const bin = notifierBinForSource(paths, variant.source);
 
 		try {

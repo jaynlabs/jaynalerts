@@ -18,7 +18,7 @@ import {
 	stat,
 	writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import pkg from "../../package.json" with { type: "json" };
 import type { Paths } from "./paths.ts";
@@ -42,6 +42,50 @@ export const NOTIFIER_VARIANTS: readonly NotifierVariant[] = [
 	{ source: "codex", label: "Codex", icon: "codex" },
 	{ source: "ghostty", label: "Ghostty", icon: "ghostty" },
 ] as const;
+
+// The Ghostty variant exists so shell notifications sent from Ghostty carry
+// its icon. Building it unconditionally dropped a "Ghostty" app into
+// ~/Applications and a "Ghostty" row into System Settings → Notifications for
+// people who have never run Ghostty — and the init checklist then asked them to
+// grant it permissions and allowlist it under Focus. Build it only where it can
+// actually be used.
+function ghosttyAppPaths(): string[] {
+	return [
+		"/Applications/Ghostty.app",
+		join(homedir(), "Applications", "Ghostty.app"),
+	];
+}
+
+// `appPaths` is a seam: whether Ghostty sits in /Applications is a property of
+// the machine running the suite, and both branches have to be testable anyway.
+export async function ghosttyIsInstalled(
+	env: NodeJS.ProcessEnv = process.env,
+	appPaths: readonly string[] = ghosttyAppPaths(),
+): Promise<boolean> {
+	if (env.TERM_PROGRAM === "ghostty") return true;
+
+	for (const app of appPaths) {
+		try {
+			if (await fileExists(app)) return true;
+		} catch {
+			// unreadable is not installed
+		}
+	}
+
+	return false;
+}
+
+/** The variants this machine should actually have bundles for. */
+export async function activeNotifierVariants(
+	env: NodeJS.ProcessEnv = process.env,
+	appPaths: readonly string[] = ghosttyAppPaths(),
+): Promise<NotifierVariant[]> {
+	const ghostty = await ghosttyIsInstalled(env, appPaths);
+
+	return NOTIFIER_VARIANTS.filter(
+		(variant) => variant.source !== "ghostty" || ghostty,
+	);
+}
 
 export type BuildReport = {
 	built: boolean;
@@ -98,11 +142,13 @@ export async function readStamp(file: string): Promise<string | null> {
 // the rest of the process. Safe to call on every hook invocation.
 export async function staleNotifierVariants(
 	paths: Paths,
+	variants?: readonly NotifierVariant[],
 ): Promise<NotifierVariant[]> {
 	const expected = await notifierStamp();
+	const wanted = variants ?? (await activeNotifierVariants());
 	const stale: NotifierVariant[] = [];
 
-	for (const variant of NOTIFIER_VARIANTS) {
+	for (const variant of wanted) {
 		if (!(await variantIsFresh(paths, variant, expected))) {
 			stale.push(variant);
 		}
@@ -159,7 +205,7 @@ export async function ensureNativeArtifacts(
 
 export async function buildNativeArtifacts(
 	paths: Paths,
-	options: { quiet?: boolean } = {},
+	options: { quiet?: boolean; variants?: readonly NotifierVariant[] } = {},
 ): Promise<BuildReport> {
 	const notes: string[] = [];
 	const log = (line: string): void => {
@@ -178,7 +224,12 @@ export async function buildNativeArtifacts(
 	}
 
 	await buildFrontmostHelper(paths, toolchain.swiftc, log);
-	await buildNotifierBundles(paths, toolchain.swiftc, log);
+	await buildNotifierBundles(
+		paths,
+		toolchain.swiftc,
+		options.variants ?? (await activeNotifierVariants()),
+		log,
+	);
 
 	return { built: true, notes, problem: null };
 }
@@ -186,6 +237,7 @@ export async function buildNativeArtifacts(
 async function buildNotifierBundles(
 	paths: Paths,
 	swiftc: string,
+	variants: readonly NotifierVariant[],
 	log: (line: string) => void,
 ): Promise<void> {
 	const swiftSource = join(nativeDir(), "notifier.swift");
@@ -205,7 +257,7 @@ async function buildNotifierBundles(
 
 		const plistTemplate = await readFile(plistSource, "utf8");
 
-		for (const variant of NOTIFIER_VARIANTS) {
+		for (const variant of variants) {
 			const app = notifierAppForSource(paths, variant.source);
 			const bin = notifierBinForSource(paths, variant.source);
 			const stampFile = notifierStampFile(app);

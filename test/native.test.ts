@@ -1,13 +1,23 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 import {
+	activeNotifierVariants,
 	buildNativeArtifacts,
 	ensureNativeArtifacts,
+	ghosttyIsInstalled,
 	helperIsStale,
 	helperStampFile,
+	NOTIFIER_VARIANTS,
 	notifierStamp,
 	notifierStampFile,
 	staleNotifierVariants,
@@ -43,7 +53,7 @@ test("the stamp carries the package version and a source hash", async () => {
 test("every variant is stale before anything is built", async () => {
 	const paths = await temporaryPaths();
 
-	const stale = await staleNotifierVariants(paths);
+	const stale = await staleNotifierVariants(paths, NOTIFIER_VARIANTS);
 
 	expect(stale.map((variant) => variant.label)).toEqual([
 		"JaynAlerts",
@@ -59,11 +69,14 @@ swiftTest(
 	async () => {
 		const paths = await temporaryPaths();
 
-		const report = await buildNativeArtifacts(paths, { quiet: true });
+		const report = await buildNativeArtifacts(paths, {
+			quiet: true,
+			variants: NOTIFIER_VARIANTS,
+		});
 
 		expect(report.built).toBe(true);
 		expect(report.problem).toBeNull();
-		expect(await staleNotifierVariants(paths)).toEqual([]);
+		expect(await staleNotifierVariants(paths, NOTIFIER_VARIANTS)).toEqual([]);
 		expect(await helperIsStale(paths)).toBe(false);
 
 		const stamp = await readFile(
@@ -81,15 +94,20 @@ swiftTest(
 	"an upgraded install rebuilds itself on the next notification",
 	async () => {
 		const paths = await temporaryPaths();
-		await buildNativeArtifacts(paths, { quiet: true });
+		await buildNativeArtifacts(paths, {
+			quiet: true,
+			variants: NOTIFIER_VARIANTS,
+		});
 
 		const codexStamp = notifierStampFile(notifierAppForSource(paths, "codex"));
 		await writeFile(codexStamp, "0.0.1+staleaaaaaaaa\n");
 		await writeFile(helperStampFile(paths), "0.0.1+staleaaaaaaaa\n");
 
-		expect((await staleNotifierVariants(paths)).map((v) => v.label)).toEqual([
-			"Codex",
-		]);
+		expect(
+			(await staleNotifierVariants(paths, NOTIFIER_VARIANTS)).map(
+				(v) => v.label,
+			),
+		).toEqual(["Codex"]);
 
 		const warnings: string[] = [];
 		const originalWarn = console.warn;
@@ -103,7 +121,7 @@ swiftTest(
 		}
 
 		expect(warnings.join("\n")).toContain("out of date");
-		expect(await staleNotifierVariants(paths)).toEqual([]);
+		expect(await staleNotifierVariants(paths, NOTIFIER_VARIANTS)).toEqual([]);
 		expect(await helperIsStale(paths)).toBe(false);
 	},
 	BUILD_TIMEOUT_MS,
@@ -113,7 +131,10 @@ swiftTest(
 	"a missing binary is stale even when the stamp still matches",
 	async () => {
 		const paths = await temporaryPaths();
-		await buildNativeArtifacts(paths, { quiet: true });
+		await buildNativeArtifacts(paths, {
+			quiet: true,
+			variants: NOTIFIER_VARIANTS,
+		});
 
 		await rm(
 			join(notifierAppForSource(paths, undefined), "Contents", "MacOS"),
@@ -123,9 +144,11 @@ swiftTest(
 			},
 		);
 
-		expect((await staleNotifierVariants(paths)).map((v) => v.label)).toEqual([
-			"JaynAlerts",
-		]);
+		expect(
+			(await staleNotifierVariants(paths, NOTIFIER_VARIANTS)).map(
+				(v) => v.label,
+			),
+		).toEqual(["JaynAlerts"]);
 	},
 	BUILD_TIMEOUT_MS,
 );
@@ -138,7 +161,7 @@ test("another process holding the rebuild lock is left to finish", async () => {
 	await ensureNativeArtifacts(paths);
 
 	// Nothing was built, and the lock we did not take is still there.
-	expect(await staleNotifierVariants(paths)).not.toEqual([]);
+	expect(await staleNotifierVariants(paths, NOTIFIER_VARIANTS)).not.toEqual([]);
 	expect((await stat(lockFile)).isFile()).toBe(true);
 });
 
@@ -152,5 +175,77 @@ test("JAYNALERTS_NO_AUTO_REBUILD opts out of rebuilding entirely", async () => {
 		delete process.env.JAYNALERTS_NO_AUTO_REBUILD;
 	}
 
-	expect(await staleNotifierVariants(paths)).not.toEqual([]);
+	expect(await staleNotifierVariants(paths, NOTIFIER_VARIANTS)).not.toEqual([]);
+});
+
+// Nobody should get a "Ghostty" app in ~/Applications, a Ghostty row in System
+// Settings → Notifications and a Ghostty line in the Focus checklist for a
+// terminal they do not have. Ghostty is installed on plenty of dev machines, so
+// these pass explicit app paths rather than depend on the one running the suite.
+const NO_GHOSTTY = ["/nonexistent/Ghostty.app"] as const;
+
+test("the Ghostty bundle is skipped on a machine without Ghostty", async () => {
+	const variants = await activeNotifierVariants(
+		{ TERM_PROGRAM: "xterm-256" },
+		NO_GHOSTTY,
+	);
+
+	expect(
+		await ghosttyIsInstalled({ TERM_PROGRAM: "xterm-256" }, NO_GHOSTTY),
+	).toBe(false);
+	expect(variants.map((v) => v.label)).toEqual([
+		"JaynAlerts",
+		"Claude Code",
+		"Codex",
+	]);
+});
+
+test("an installed Ghostty opts the bundle back in", async () => {
+	const home = await mkdtemp(join(tmpdir(), "jaynalerts-ghostty-"));
+	temporaryHomes.push(home);
+	const app = join(home, "Ghostty.app");
+	await mkdir(app);
+
+	const variants = await activeNotifierVariants({ TERM_PROGRAM: "xterm-256" }, [
+		app,
+	]);
+
+	expect(variants.map((v) => v.label)).toEqual([
+		"JaynAlerts",
+		"Claude Code",
+		"Codex",
+		"Ghostty",
+	]);
+});
+
+test("running under Ghostty opts the bundle back in without an app path", async () => {
+	const variants = await activeNotifierVariants(
+		{ TERM_PROGRAM: "ghostty" },
+		NO_GHOSTTY,
+	);
+
+	expect(variants.map((v) => v.label)).toEqual([
+		"JaynAlerts",
+		"Claude Code",
+		"Codex",
+		"Ghostty",
+	]);
+});
+
+test("a skipped variant is not reported as stale", async () => {
+	const paths = await temporaryPaths();
+	const variants = await activeNotifierVariants(
+		{ TERM_PROGRAM: "xterm-256" },
+		NO_GHOSTTY,
+	);
+
+	const stale = await staleNotifierVariants(paths, variants);
+
+	// Nothing is built yet, so every *wanted* variant is stale — and Ghostty,
+	// which this machine does not want, is not among them.
+	expect(stale.map((v) => v.label)).toEqual([
+		"JaynAlerts",
+		"Claude Code",
+		"Codex",
+	]);
 });

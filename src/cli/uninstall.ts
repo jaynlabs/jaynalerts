@@ -3,7 +3,8 @@
 // allowlist, permanently, because nothing ever removed the bundles that
 // created them. A published tool has to be able to take itself back out.
 
-import { rm, unlink } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { lstat, rm, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { helperStampFile, NOTIFIER_VARIANTS } from "../core/native.ts";
 import { notifierAppForSource, resolvePaths } from "../core/paths.ts";
@@ -86,14 +87,21 @@ function report(options: UninstallOptions, changes: Change[]): void {
 
 	console.log("jaynalerts removed.");
 
-	if (options.bundles) {
+	// Name only the rows this machine actually had. The Ghostty bundle is built
+	// where Ghostty is installed, so sending everyone else to look for a Ghostty
+	// row they never had is worse than saying nothing.
+	const removedBundles = changes
+		.filter((change) => change.label.endsWith(" bundle"))
+		.map((change) => change.label.slice(0, -" bundle".length));
+
+	if (removedBundles.length > 0) {
 		console.log(
 			[
 				"",
 				"macOS keeps a Notifications row and a Focus allowlist entry for every",
 				"app bundle it has ever seen, including ones that no longer exist. Remove",
 				"the leftovers by hand if you want them gone:",
-				"  System Settings → Notifications → JaynAlerts / Claude Code / Codex / Ghostty",
+				`  System Settings → Notifications → ${removedBundles.join(" / ")}`,
 				"  System Settings → Focus → your Focus → Allowed Notifications",
 			].join("\n"),
 		);
@@ -430,17 +438,37 @@ async function removeOpencodePlugin(
 		"jaynalerts",
 	);
 
+	// Only the symlink `init` made is ours. A real directory means jaynalerts is
+	// installed there as a dependency, and `unlink` on it would fail anyway.
+	let link: Stats;
+	try {
+		link = await lstat(linkedPackage);
+	} catch (error) {
+		if (!isNodeError(error) || error.code !== "ENOENT") {
+			console.warn(
+				`opencode:    could not inspect ${linkedPackage}: ${errorMessage(error)}`,
+			);
+		}
+		return;
+	}
+
+	if (!link.isSymbolicLink()) {
+		console.log(
+			`opencode:    ${linkedPackage} is a real package directory; left alone`,
+		);
+		return;
+	}
+
 	try {
 		if (!options.dryRun) {
 			await unlink(linkedPackage);
 		}
+		changes.push({ label: "opencode package link", detail: linkedPackage });
 		console.log(`opencode:    removed link (${linkedPackage})`);
 	} catch (error) {
-		if (!isNodeError(error) || error.code !== "ENOENT") {
-			console.warn(
-				`opencode:    could not remove ${linkedPackage}: ${errorMessage(error)}`,
-			);
-		}
+		console.warn(
+			`opencode:    could not remove ${linkedPackage}: ${errorMessage(error)}`,
+		);
 	}
 }
 

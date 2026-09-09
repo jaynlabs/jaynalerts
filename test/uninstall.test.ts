@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+	lstat,
 	mkdir,
 	mkdtemp,
 	readFile,
@@ -157,6 +158,45 @@ test(
 		const stdout = await runCli(home, ["uninstall"]);
 
 		expect(stdout).toContain("Nothing to remove");
+	},
+	CLI_TIMEOUT_MS,
+);
+
+test(
+	"uninstall removes the opencode link it made and leaves a real one alone",
+	async () => {
+		const home = await newHome();
+		const linkedPackage = join(
+			home,
+			".config",
+			"opencode",
+			"node_modules",
+			"jaynalerts",
+		);
+
+		await runCli(home, ["init", "--opencode"]);
+		expect((await lstat(linkedPackage)).isSymbolicLink()).toBe(true);
+
+		const preview = await runCli(home, [
+			"uninstall",
+			"--opencode",
+			"--dry-run",
+		]);
+		expect(preview).toContain("removed link");
+		expect((await lstat(linkedPackage)).isSymbolicLink()).toBe(true);
+
+		const stdout = await runCli(home, ["uninstall", "--opencode"]);
+		expect(stdout).toContain("removed link");
+		await expect(lstat(linkedPackage)).rejects.toThrow();
+
+		// A real directory is jaynalerts installed there as a dependency — not
+		// the link we made, and not ours to delete.
+		await mkdir(linkedPackage, { recursive: true });
+		await runCli(home, ["init", "--opencode"]);
+
+		const second = await runCli(home, ["uninstall", "--opencode"]);
+		expect(second).toContain("real package directory; left alone");
+		expect((await stat(linkedPackage)).isDirectory()).toBe(true);
 	},
 	CLI_TIMEOUT_MS,
 );

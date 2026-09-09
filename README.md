@@ -22,6 +22,17 @@ Notification bundles are compiled locally rather than shipped prebuilt — a pre
 
 ## Install
 
+### From npm
+
+```sh
+npm install -g jaynalerts        # or: bun add -g jaynalerts
+jaynalerts init                  # add --shell for the zsh hook
+```
+
+The published package runs on [bun](https://bun.sh): the installed `jaynalerts` command is a small `sh` shim that execs `bun`, so bun has to be present even when you install with npm. The shim looks for it on `PATH` and in the usual locations (`$BUN_INSTALL/bin`, `~/.bun/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) — it matters because agent hooks run with a minimal `PATH` — and prints how to install bun if it finds none. Xcode Command Line Tools are needed too, for `swiftc`.
+
+### From source
+
 ```sh
 git clone https://github.com/jaynlabs/jaynalerts.git
 cd jaynalerts
@@ -101,11 +112,13 @@ jaynalerts decides between transient and sticky banners using a small Swift help
 2. The frontmost app's bundle ID.
 3. Under tmux, the originating socket, session, window, pane, and attached client.
 
+tmux is optional: outside it, step 3 is skipped entirely and focus is just host vs. frontmost.
+
 If host == frontmost and the only attached tmux client is showing the originating pane, the terminal is considered focused → **transient**. Otherwise → **sticky**. Ambiguous multi-client cases deliberately stay sticky because macOS exposes the frontmost app, not its exact terminal window.
 
 ## Notifications on macOS
 
-Banners are sent through `JaynAlertsNotifier.app`, built and code-signed (ad-hoc) on `init`. `init` builds one bundle per source — Claude Code, Codex, Ghostty, and a default — each with its own icon and app name, so a banner shows which agent is asking.
+Banners are sent through `JaynAlertsNotifier.app`, built and code-signed (ad-hoc) on `init`. `init` builds one bundle per source — Claude Code, Codex, and a default — each with its own icon and app name, so a banner shows which agent is asking. A Ghostty-branded bundle is built only where Ghostty is installed (or when you are running under it); on every other machine nothing Ghostty-related lands in `~/Applications`, in System Settings → Notifications, or in the Focus allowlist checklist.
 
 Each bundle carries a build stamp (`Contents/Resources/build-stamp`) hashing the package version together with the Swift and plist sources. Every notification path compares that stamp before sending, and rebuilds the bundle if it no longer matches — so upgrading the package cannot leave a stale binary behind. This matters because the old failure mode was silent: a stale notifier simply hung on `--sticky`. `doctor` reports a stale bundle rather than rebuilding it; `init` rebuilds. Set `JAYNALERTS_NO_AUTO_REBUILD=1` to opt out of the automatic rebuild.
 
@@ -144,7 +157,7 @@ Existing configuration is preserved in both files and a `.jaynalerts.bak` backup
 
 ## opencode setup
 
-`jaynalerts init --opencode` writes `~/.config/opencode/plugins/jaynalerts.ts` (copied from `examples/opencode-plugin.ts`) and runs `bun link jaynalerts` inside `~/.config/opencode` so the plugin can `import "jaynalerts"`. An existing plugin file is backed up to `jaynalerts.ts.bak` before being overwritten.
+`jaynalerts init --opencode` writes `~/.config/opencode/plugins/jaynalerts.ts` (copied from `examples/opencode-plugin.ts`) and symlinks this install into `~/.config/opencode/node_modules/jaynalerts` so the plugin can `import "jaynalerts"`. A real `node_modules/jaynalerts` directory — jaynalerts installed there as a dependency — is left alone. An existing plugin file is backed up to `jaynalerts.ts.bak` before being overwritten.
 
 ## Shell hook (zsh)
 
@@ -158,6 +171,8 @@ Existing configuration is preserved in both files and a `.jaynalerts.bak` backup
 
 Re-running `init` updates the block in place. A `.jaynalerts.bak` is created on first modification. Open a new shell or `source ~/.zshrc` for it to take effect.
 
+The block is zsh-only — `&!` and `add-zsh-hook` are zsh syntax, and bash cannot even *parse* a file containing `&!`, so writing it into a `.bashrc` would take the whole rc file down rather than harmlessly do nothing. `--shell-rc` therefore refuses any rc path that isn't a zsh one. The agent integrations work in any shell; only this hook needs zsh.
+
 ## Uninstall
 
 ```sh
@@ -167,7 +182,7 @@ jaynalerts uninstall --codex     # revert just one integration
 jaynalerts uninstall --config    # also delete ~/.config/jaynalerts/config.toml
 ```
 
-Uninstall only removes what jaynalerts owns: hook groups running our exact commands, the `notify` line and `[tui] notifications = false` we wrote, our managed `.zshrc` block, the opencode plugin if it is still ours, and app bundles whose `Info.plist` carries a `dev.jaynalerts.` identifier. Foreign hooks, sibling TOML tables, and your own edits are left alone. `config.toml` is kept unless you pass `--config`, and the `.jaynalerts.bak` backups stay on disk.
+Uninstall only removes what jaynalerts owns: hook groups running our exact commands, the `notify` line and `[tui] notifications = false` we wrote, our managed `.zshrc` block, the opencode plugin if it is still ours together with the `node_modules/jaynalerts` symlink we made (a real package directory there is left alone), and app bundles whose `Info.plist` carries a `dev.jaynalerts.` identifier. Foreign hooks, sibling TOML tables, and your own edits are left alone. `config.toml` is kept unless you pass `--config`, and the `.jaynalerts.bak` backups stay on disk.
 
 One thing it cannot undo: macOS keeps a Notifications row and a Focus allowlist entry for every app bundle it has ever seen, including deleted ones. Uninstall prints where to clear those by hand.
 

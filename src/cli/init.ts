@@ -1,5 +1,12 @@
-import { constants } from "node:fs";
-import { copyFile, lstat, stat } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import {
+	copyFile,
+	lstat,
+	mkdir,
+	realpath,
+	symlink,
+	unlink,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { buildNativeArtifacts } from "../core/native.ts";
 import { resolvePaths } from "../core/paths.ts";
@@ -380,7 +387,27 @@ function syncCodexHandler(
 	return true;
 }
 
+// The managed block is zsh: `&!` and `add-zsh-hook` are zsh syntax, and bash
+// fails to *parse* a file containing `&!` — so writing this into a .bashrc does
+// not merely no-op, it takes the whole rc file down and everything after the
+// block silently stops running. `--shell-rc` invites exactly that, so refuse
+// any rc that is not zsh rather than hand someone a broken shell.
+function assertZshRc(rcPath: string): void {
+	if (rcPath.toLowerCase().includes("zsh")) return;
+
+	throw new Error(
+		[
+			`refusing to write the shell hook into ${rcPath}.`,
+			"The hook is zsh-only — bash cannot even parse it, so this would break",
+			"the whole rc file. Point --shell-rc at a zsh rc (~/.zshrc), or skip",
+			"--shell and use the agent integrations only.",
+		].join("\n"),
+	);
+}
+
 async function installShellHook(rcPath: string): Promise<string> {
+	assertZshRc(rcPath);
+
 	const expandedRc = expandUser(rcPath);
 	const resolvedRc = await resolveSymlink(expandedRc);
 	const existing = await readOptionalFile(resolvedRc);
@@ -560,102 +587,78 @@ async function readOpencodePluginSource(): Promise<string> {
 	return Bun.file(pluginPath).text();
 }
 
+// The plugin does `import "jaynalerts"`, so opencode's config directory needs a
+// node_modules entry pointing back at this install. `bun link jaynalerts` can
+// only ever resolve for a cloned checkout that ran `bun link` first — an
+// npm-installed copy is not in bun's link registry, so that call failed for
+// every published-package user. Symlinking the package root is what `bun link`
+// would have produced anyway, and it works for clone, bun link and npm alike.
 async function linkOpencodePackage(): Promise<void> {
 	const realPluginFile = await resolveSymlink(resolveOpencodePluginFile());
 	const opencodeConfigDir = dirname(dirname(realPluginFile));
 	const opencodePackageDir = join(opencodeConfigDir, "node_modules");
 	const linkedPackage = join(opencodePackageDir, "jaynalerts");
+	const packageRoot = join(import.meta.dir, "..", "..");
 
-	try {
-		const stats = await lstat(linkedPackage);
+	const existing = await lstatOrNull(linkedPackage);
 
-		if (stats.isSymbolicLink()) {
-			try {
-				await stat(linkedPackage);
-				return;
-			} catch (error) {
-				if (!isNodeError(error) || error.code !== "ENOENT") {
-					throw error;
-				}
-			}
-		}
-	} catch (error) {
-		if (!isNodeError(error) || error.code !== "ENOENT") {
-			throw error;
-		}
-	}
-
-	try {
-		const stats = await lstat(opencodeConfigDir);
-
-		if (!stats.isDirectory()) {
-			warnManualLink(opencodeConfigDir);
-			return;
-		}
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") {
-			warnManualLink(opencodeConfigDir);
-			return;
-		}
-
-		throw error;
-	}
-
-	const proc = Bun.spawn(["bun", "link", "jaynalerts"], {
-		cwd: opencodeConfigDir,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-
-	const stdoutPromise = new Response(proc.stdout).text();
-	const stderrPromise = new Response(proc.stderr).text();
-	let exitCode: number;
-	let stderr: string;
-
-	try {
-		[exitCode, , stderr] = await Promise.all([
-			proc.exited,
-			stdoutPromise,
-			stderrPromise,
-		]);
-	} catch (error) {
-		stderr = await stderrPromise.catch(() => "");
-		if (isNodeError(error) && error.code === "ENOENT") {
-			warnManualLink(opencodeConfigDir);
-			return;
-		}
-
-		warnManualLink(
-			opencodeConfigDir,
-			stderr.trim() === "" ? errorMessage(error) : stderr.trim(),
+	// A real directory means jaynalerts is installed there as a dependency;
+	// the import already resolves and it is not ours to replace.
+	if (existing !== null && !existing.isSymbolicLink()) {
+		console.log(
+			`opencode:    ${linkedPackage} is a real package directory; left alone`,
 		);
 		return;
 	}
 
-	if (exitCode !== 0) {
-		if (exitCode === 127 || /not found/i.test(stderr)) {
-			warnManualLink(opencodeConfigDir);
-			return;
-		}
+	if (existing !== null && (await linkResolvesTo(linkedPackage, packageRoot))) {
+		console.log(`opencode:    already linked to ${packageRoot}`);
+		return;
+	}
 
-		warnManualLink(
-			opencodeConfigDir,
-			stderr.trim() === "" ? undefined : stderr.trim(),
-		);
+	try {
+		await mkdir(opencodePackageDir, { recursive: true });
+		if (existing !== null) {
+			await unlink(linkedPackage);
+		}
+		await symlink(packageRoot, linkedPackage, "dir");
+	} catch (error) {
+		warnManualLink(linkedPackage, packageRoot, errorMessage(error));
 		return;
 	}
 
 	console.log(`opencode:    linked jaynalerts into ${opencodePackageDir}/`);
 }
 
-function warnManualLink(opencodeConfigDir: string, detail?: string): void {
-	console.warn(
-		`opencode:    could not auto-link jaynalerts into ${opencodeConfigDir}/`,
-	);
-	if (detail !== undefined) {
-		console.warn(`             ${detail}`);
+async function lstatOrNull(path: string): Promise<Stats | null> {
+	try {
+		return await lstat(path);
+	} catch (error) {
+		if (isNodeError(error) && error.code === "ENOENT") {
+			return null;
+		}
+
+		throw error;
 	}
+}
+
+async function linkResolvesTo(link: string, target: string): Promise<boolean> {
+	try {
+		return (await realpath(link)) === (await realpath(target));
+	} catch {
+		return false;
+	}
+}
+
+function warnManualLink(
+	linkedPackage: string,
+	packageRoot: string,
+	detail: string,
+): void {
+	console.warn(`opencode:    could not link jaynalerts into ${linkedPackage}`);
+	console.warn(`             ${detail}`);
 	console.warn(
-		`             run manually: cd ${opencodeConfigDir} && bun link jaynalerts`,
+		`             run manually: ln -s ${packageRoot} ${linkedPackage}`,
 	);
 }
 

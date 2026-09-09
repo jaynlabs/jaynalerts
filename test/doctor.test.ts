@@ -12,6 +12,7 @@ import {
 } from "../src/core/paths.ts";
 
 const originalHome = process.env.JAYNALERTS_HOME;
+const originalTermProgram = process.env.TERM_PROGRAM;
 const originalLog = console.log;
 const temporaryHomes: string[] = [];
 
@@ -37,6 +38,9 @@ beforeEach(async () => {
 	const home = await mkdtemp(join(tmpdir(), "jaynalerts-doctor-"));
 	temporaryHomes.push(home);
 	process.env.JAYNALERTS_HOME = home;
+	// The Ghostty bundle is only built where Ghostty is installed, so pin it on
+	// rather than let the suite depend on the machine running it.
+	process.env.TERM_PROGRAM = "ghostty";
 	lines = [];
 	console.log = (message?: unknown) => {
 		lines.push(String(message));
@@ -45,6 +49,11 @@ beforeEach(async () => {
 
 afterEach(async () => {
 	console.log = originalLog;
+	if (originalTermProgram === undefined) {
+		delete process.env.TERM_PROGRAM;
+	} else {
+		process.env.TERM_PROGRAM = originalTermProgram;
+	}
 	if (originalHome === undefined) {
 		delete process.env.JAYNALERTS_HOME;
 	} else {

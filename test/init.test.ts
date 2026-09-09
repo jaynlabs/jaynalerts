@@ -5,6 +5,7 @@ import {
 	mkdtemp,
 	readFile,
 	readlink,
+	realpath,
 	rm,
 	stat,
 	symlink,
@@ -26,7 +27,7 @@ afterEach(async () => {
 });
 
 test(
-	"opencode init writes plugin and is idempotent",
+	"opencode init writes the plugin, links the package, and is idempotent",
 	async () => {
 		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
 		temporaryHomes.push(home);
@@ -57,10 +58,25 @@ test(
 		expect(notifierPlist).toContain("<string>alert</string>");
 		const firstStat = await stat(target);
 
+		// The plugin does `import "jaynalerts"`, so opencode's config dir needs a
+		// node_modules entry pointing back at this install. `bun link` could never
+		// produce one for an npm-installed copy; the symlink works for both.
+		const linkedPackage = join(
+			home,
+			".config",
+			"opencode",
+			"node_modules",
+			"jaynalerts",
+		);
+		expect((await lstat(linkedPackage)).isSymbolicLink()).toBe(true);
+		expect(await realpath(linkedPackage)).toBe(await realpath(process.cwd()));
+
 		await runInitInHome(home);
 
 		expect(await readFile(target, "utf8")).toBe(source);
 		expect((await stat(target)).mtimeMs).toBe(firstStat.mtimeMs);
+		expect((await lstat(linkedPackage)).isSymbolicLink()).toBe(true);
+		expect(await realpath(linkedPackage)).toBe(await realpath(process.cwd()));
 	},
 	INIT_TIMEOUT_MS,
 );
@@ -127,6 +143,31 @@ test(
 		const realContents = await readFile(realFile, "utf8");
 		expect(realContents).toContain("# real rc");
 		expect(realContents).toContain("jaynalerts begin");
+	},
+	INIT_TIMEOUT_MS,
+);
+
+// bash cannot parse `&!` at all, so writing the managed block into a .bashrc
+// would not no-op — it would take the whole rc file down.
+test(
+	"shell init refuses a non-zsh rc instead of breaking it",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		const bashrc = join(home, ".bashrc");
+		const original = "# user content\nexport FOO=1\n";
+
+		await writeFile(bashrc, original);
+
+		const { exitCode, stderr } = await runInitExpectingFailure(home, [
+			"--shell",
+			"--shell-rc",
+			bashrc,
+		]);
+
+		expect(exitCode).not.toBe(0);
+		expect(stderr).toContain("refusing to write the shell hook");
+		expect(await readFile(bashrc, "utf8")).toBe(original);
 	},
 	INIT_TIMEOUT_MS,
 );
@@ -404,4 +445,26 @@ async function runCodexInitInHome(home: string): Promise<void> {
 		new Response(proc.stderr).text(),
 	]);
 	if (exitCode !== 0) throw new Error(`codex init failed: ${stderr}`);
+}
+
+async function runInitExpectingFailure(
+	home: string,
+	args: string[],
+): Promise<{ exitCode: number; stderr: string }> {
+	const proc = Bun.spawn(
+		[process.execPath, "run", "src/cli/index.ts", "init", ...args],
+		{
+			cwd: process.cwd(),
+			env: { ...process.env, HOME: home },
+			stderr: "pipe",
+			stdout: "pipe",
+		},
+	);
+
+	const [exitCode, stderr] = await Promise.all([
+		proc.exited,
+		new Response(proc.stderr).text(),
+	]);
+
+	return { exitCode, stderr };
 }

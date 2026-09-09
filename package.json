@@ -22,7 +22,7 @@
 		"darwin"
 	],
 	"bin": {
-		"jaynalerts": "./src/cli/index.ts"
+		"jaynalerts": "./bin/jaynalerts"
 	},
 	"exports": {
 		".": "./src/core/index.ts",
@@ -38,6 +38,7 @@
 		"format": "biome format --write ."
 	},
 	"files": [
+		"bin",
 		"src",
 		"assets",
 		"examples",
