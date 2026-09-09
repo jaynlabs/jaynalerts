@@ -11,6 +11,11 @@ Commands:
   init [--claude-code] [--codex] [--opencode] [--shell] [--shell-rc PATH]
                               Install coding-agent integrations / shell hook
                               --shell-rc PATH overrides the default ~/.zshrc target
+  uninstall [--claude-code] [--codex] [--opencode] [--shell] [--bundles]
+            [--config] [--dry-run]
+                              Remove the notifier bundles and revert every
+                              config edit init made. With no flags, removes
+                              everything except your config.toml
   grant-terminal-notifications
                               Trigger this terminal's macOS notification permission prompt
                               (run once per terminal app you use)
@@ -56,6 +61,12 @@ async function main(): Promise<void> {
 	if (command === "init") {
 		const { runInit } = await import("./init.ts");
 		await runInit(process.argv.slice(3));
+		return;
+	}
+
+	if (command === "uninstall") {
+		const { runUninstall } = await import("./uninstall.ts");
+		await runUninstall(process.argv.slice(3));
 		return;
 	}
 

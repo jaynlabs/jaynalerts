@@ -1,21 +1,37 @@
-import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
+import { copyFile, lstat, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { buildNativeArtifacts } from "../core/native.ts";
+import { resolvePaths } from "../core/paths.ts";
+import { checkSwiftToolchain, swiftToolchainMessage } from "../core/swift.ts";
 import {
-	copyFile,
-	lstat,
-	mkdir,
-	mkdtemp,
-	readFile,
-	readlink,
-	realpath,
-	rename,
-	rm,
-	stat,
-	writeFile,
-} from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { notifierBinForSource, resolvePaths } from "../core/paths.ts";
+	collectNotifierStatuses,
+	describeStatus,
+	manualSteps,
+} from "./doctor.ts";
+import type { JsonObject } from "./integrations.ts";
+import {
+	CODEX_NOTIFY_COMMAND,
+	claudeCodeHookSpecs,
+	codexHome,
+	codexHookSpecs,
+	createBackupIfNeeded,
+	defaultShellRc,
+	errorMessage,
+	expandUser,
+	findCommandHookGroup,
+	isJsonObject,
+	isNodeError,
+	readOptionalFile,
+	resolveClaudeCodeSettingsFile,
+	resolveOpencodePluginFile,
+	resolveSymlink,
+	SHELL_BLOCK_BEGIN,
+	SHELL_BLOCK_END,
+	spliceShellBlock,
+	writeJsonAtomically,
+	writeTextAtomically,
+} from "./integrations.ts";
 
 type InitOptions = {
 	claudeCode: boolean;
@@ -24,9 +40,6 @@ type InitOptions = {
 	shell: boolean;
 	shellRc: string | null;
 };
-
-const SHELL_BLOCK_BEGIN = "# jaynalerts begin (managed — do not edit)";
-const SHELL_BLOCK_END = "# jaynalerts end";
 
 const SHELL_BLOCK_BODY = `if [[ -n \${ZSH_VERSION-} ]] && command -v jaynalerts >/dev/null 2>&1; then
   zmodload zsh/datetime 2>/dev/null
@@ -52,37 +65,12 @@ function buildShellBlock(): string {
 	return `${SHELL_BLOCK_BEGIN}\n${SHELL_BLOCK_BODY}\n${SHELL_BLOCK_END}\n`;
 }
 
-type JsonObject = Record<string, unknown>;
-
-type HookEvent = "Stop" | "Notification";
-
-type HookSpec = {
-	event: HookEvent;
-	matcher?: string;
-	command: string;
-};
-
-type CodexHookSpec = {
-	event: string;
-	matcher?: string;
-	command: string;
-	async?: boolean;
-};
-
-const hookSpecs: HookSpec[] = [
-	{
-		event: "Stop",
-		command: "jaynalerts claude-code-hook on-stop",
-	},
-	{
-		event: "Notification",
-		matcher: "permission_prompt",
-		command: "jaynalerts claude-code-hook on-notification",
-	},
-];
-
 export async function runInit(argv: string[]): Promise<void> {
 	const options = parseArgs(argv);
+
+	// Compiling is not optional — every banner goes through the Swift notifier —
+	// so find out before touching anyone's config files.
+	await requireSwiftToolchain();
 
 	if (options.claudeCode) {
 		await installClaudeCodeHooks();
@@ -96,246 +84,47 @@ export async function runInit(argv: string[]): Promise<void> {
 		await installOpencodePlugin();
 	}
 
-	if (options.shell) {
-		await installShellHook(options.shellRc ?? defaultShellRc());
-	}
+	const shellRc = options.shell
+		? await installShellHook(options.shellRc ?? defaultShellRc())
+		: null;
 
-	if (options.claudeCode || options.codex || options.opencode) {
-		await buildFrontmostHelper();
-		await buildNotifierBundle();
-	}
+	await buildNativeArtifacts(resolvePaths());
+	await reportRemainingSteps(options, shellRc);
 }
 
-async function buildNotifierBundle(): Promise<void> {
-	if (process.platform !== "darwin") {
-		return;
-	}
+async function requireSwiftToolchain(): Promise<void> {
+	if (process.platform !== "darwin") return;
 
-	const paths = resolvePaths();
-	const { notifierBin } = paths;
-	const swiftSource = join(
-		import.meta.dir,
-		"..",
-		"..",
-		"src",
-		"native",
-		"notifier.swift",
-	);
-	const plistSource = join(
-		import.meta.dir,
-		"..",
-		"..",
-		"src",
-		"native",
-		"notifier.plist",
-	);
+	const toolchain = await checkSwiftToolchain();
+	if (toolchain.ok) return;
 
-	try {
-		await stat(swiftSource);
-		await stat(plistSource);
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") {
-			console.warn(
-				`notifier:    missing source files; skipped (${swiftSource})`,
-			);
-			return;
-		}
-		throw error;
-	}
-
-	const macOSDir = dirname(notifierBin);
-	await mkdir(macOSDir, { recursive: true });
-
-	let swiftcExit: number;
-	let swiftcStderr: string;
-	try {
-		const proc = Bun.spawn(["swiftc", "-O", "-o", notifierBin, swiftSource], {
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		swiftcStderr = await new Response(proc.stderr).text();
-		swiftcExit = await proc.exited;
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") {
-			console.warn(
-				"notifier:    swiftc not found; install Xcode Command Line Tools to enable the notifier",
-			);
-			return;
-		}
-		throw error;
-	}
-
-	if (swiftcExit !== 0) {
-		console.warn(
-			`notifier:    failed to compile (exit ${swiftcExit}); banners will not work`,
-		);
-		if (swiftcStderr.trim().length > 0) {
-			console.warn(`             ${swiftcStderr.trim()}`);
-		}
-		return;
-	}
-
-	const assetsRoot = join(import.meta.dir, "..", "..", "assets");
-	const plistTemplate = await readFile(plistSource, "utf8");
-	const variants = [
-		{ source: undefined, label: "JaynAlerts", icon: "notifier" },
-		{ source: "claude-code", label: "Claude Code", icon: "claude-code" },
-		{ source: "codex", label: "Codex", icon: "codex" },
-		{ source: "ghostty", label: "Ghostty", icon: "ghostty" },
-	] as const;
-
-	for (const variant of variants) {
-		const bin = notifierBinForSource(paths, variant.source);
-		const app = resolve(bin, "..", "..", "..");
-		await mkdir(dirname(bin), { recursive: true });
-		if (bin !== notifierBin) await copyFile(notifierBin, bin);
-		const suffix = variant.source?.replaceAll("-", ".") ?? "notifier";
-		const plist = plistTemplate
-			.replace("dev.jaynalerts.notifier", `dev.jaynalerts.${suffix}`)
-			.replaceAll(
-				"<string>JaynAlerts</string>",
-				`<string>${variant.label}</string>`,
-			);
-		await writeFile(join(app, "Contents", "Info.plist"), plist);
-		const resourcesDir = join(app, "Contents", "Resources");
-		await mkdir(resourcesDir, { recursive: true });
-		const targetIcns = join(resourcesDir, "AppIcon.icns");
-		const icnsSource = join(assetsRoot, `${variant.icon}.icns`);
-		const pngSource = join(assetsRoot, `${variant.icon}.png`);
-		if (await fileExists(icnsSource)) {
-			await copyFile(icnsSource, targetIcns);
-		} else if (
-			(await fileExists(pngSource)) &&
-			!(await convertPngToIcns(pngSource, targetIcns))
-		) {
-			console.warn(`notifier:    could not convert ${pngSource} to .icns`);
-		}
-		await signNotifierBundle(app);
-		console.log(`notifier:    ${variant.label} bundle built at ${app}`);
-	}
+	throw new Error(swiftToolchainMessage(toolchain.problem));
 }
 
-async function signNotifierBundle(app: string): Promise<void> {
-	const proc = Bun.spawn(["codesign", "--sign", "-", "--force", app], {
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	const [exitCode, stderr] = await Promise.all([
-		proc.exited,
-		new Response(proc.stderr).text(),
-	]);
-	if (exitCode !== 0) {
-		throw new Error(`codesign failed for ${app}: ${stderr.trim()}`);
-	}
-}
+// macOS keeps four permission grants, four Persistent toggles and the Focus
+// allowlist to itself. Init cannot set them, so it ends by saying exactly which
+// ones are still outstanding instead of leaving them to be discovered.
+async function reportRemainingSteps(
+	options: InitOptions,
+	shellRc: string | null,
+): Promise<void> {
+	if (process.platform !== "darwin") return;
 
-async function fileExists(path: string): Promise<boolean> {
-	try {
-		await stat(path);
-		return true;
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") {
-			return false;
-		}
-		throw error;
-	}
-}
+	const statuses = await collectNotifierStatuses();
 
-async function convertPngToIcns(
-	pngPath: string,
-	icnsPath: string,
-): Promise<boolean> {
-	const tempRoot = await mkdtemp(join(tmpdir(), "jaynalerts-icon-"));
-	const iconset = join(tempRoot, "AppIcon.iconset");
-	try {
-		await mkdir(iconset, { recursive: true });
-		for (const size of [16, 32, 128, 256, 512]) {
-			for (const scale of [1, 2]) {
-				const pixels = size * scale;
-				const suffix = scale === 2 ? "@2x" : "";
-				const output = join(iconset, `icon_${size}x${size}${suffix}.png`);
-				const proc = Bun.spawn(
-					[
-						"sips",
-						"-z",
-						String(pixels),
-						String(pixels),
-						pngPath,
-						"--out",
-						output,
-					],
-					{ stdio: ["ignore", "ignore", "ignore"] },
-				);
-				if ((await proc.exited) !== 0) return false;
-			}
-		}
-		const proc = Bun.spawn(
-			["iconutil", "--convert", "icns", "--output", icnsPath, iconset],
-			{ stdio: ["ignore", "ignore", "ignore"] },
-		);
-		return (await proc.exited) === 0;
-	} catch {
-		return false;
-	} finally {
-		await rm(tempRoot, { recursive: true, force: true });
-	}
-}
-
-async function buildFrontmostHelper(): Promise<void> {
-	if (process.platform !== "darwin") {
-		return;
+	console.log("");
+	console.log("macOS notification settings:");
+	for (const status of statuses) {
+		console.log(`  ${status.variant.label}: ${describeStatus(status)}`);
 	}
 
-	const target = resolvePaths().bundleIdBin;
-	const source = join(
-		import.meta.dir,
-		"..",
-		"..",
-		"src",
-		"native",
-		"bundle-id.swift",
-	);
-
-	try {
-		await stat(source);
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") {
-			console.warn(`focus:       missing Swift source at ${source}; skipped`);
-			return;
-		}
-		throw error;
+	console.log("");
+	for (const line of manualSteps(statuses, {
+		codex: options.codex,
+		shellRc,
+	})) {
+		console.log(line);
 	}
-
-	await mkdir(dirname(target), { recursive: true });
-
-	let exitCode: number;
-	let stderr: string;
-	try {
-		const proc = Bun.spawn(["swiftc", "-O", "-o", target, source], {
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		const stderrPromise = new Response(proc.stderr).text();
-		exitCode = await proc.exited;
-		stderr = await stderrPromise;
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") {
-			console.warn(
-				"focus:       swiftc not found; falling back to osascript (install Xcode Command Line Tools to enable the fast helper)",
-			);
-			return;
-		}
-		throw error;
-	}
-
-	if (exitCode !== 0) {
-		console.warn(
-			`focus:       failed to compile frontmost helper (exit ${exitCode}); falling back to osascript`,
-		);
-		if (stderr.trim().length > 0) {
-			console.warn(`             ${stderr.trim()}`);
-		}
-		return;
-	}
-
-	console.log(`focus:       compiled helper at ${target}`);
 }
 
 function parseArgs(argv: string[]): InitOptions {
@@ -401,25 +190,9 @@ function parseArgs(argv: string[]): InitOptions {
 }
 
 async function installCodexNotify(): Promise<void> {
-	const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-	const configFile = await resolveSymlink(join(codexHome, "config.toml"));
+	const configFile = await resolveSymlink(join(codexHome(), "config.toml"));
 	const existing = (await readOptionalFile(configFile)) ?? "";
-	const command = 'notify = ["jaynalerts", "codex-hook"]';
-	const firstTable = existing.search(/^\s*\[/m);
-	const topLevelEnd = firstTable === -1 ? existing.length : firstTable;
-	const topLevel = existing.slice(0, topLevelEnd);
-	const topLevelNotify = /^notify\s*=.*$/m;
-	let next: string;
-
-	if (topLevelNotify.test(topLevel)) {
-		next = `${topLevel.replace(topLevelNotify, command)}${existing.slice(topLevelEnd)}`;
-	} else {
-		const insertion = `${command}\n`;
-		next =
-			firstTable === -1
-				? `${existing}${existing.length > 0 && !existing.endsWith("\n") ? "\n" : ""}${insertion}`
-				: `${existing.slice(0, firstTable)}${insertion}\n${existing.slice(firstTable)}`;
-	}
+	const next = withTuiNotificationsDisabled(withNotifyHook(existing));
 
 	if (next === existing) {
 		console.log(`Codex:       notify hook already up to date (${configFile})`);
@@ -433,21 +206,56 @@ async function installCodexNotify(): Promise<void> {
 	if (backupCreated) console.log(`             backup: ${backupFile}`);
 }
 
-// Codex's legacy `notify` command only ever fires `agent-turn-complete`.
-// Approval prompts arrive through the hooks system instead, which reads
-// $CODEX_HOME/hooks.json using the same shape as Claude Code's settings.
-const codexHookSpecs: CodexHookSpec[] = [
-	{
-		event: "PermissionRequest",
-		matcher: "*",
-		command: "jaynalerts codex-hook on-permission-request",
-		async: true,
-	},
-];
+function withNotifyHook(config: string): string {
+	const command = CODEX_NOTIFY_COMMAND;
+	const firstTable = config.search(/^\s*\[/m);
+	const topLevelEnd = firstTable === -1 ? config.length : firstTable;
+	const topLevel = config.slice(0, topLevelEnd);
+	const topLevelNotify = /^notify\s*=.*$/m;
+
+	if (topLevelNotify.test(topLevel)) {
+		return `${topLevel.replace(topLevelNotify, command)}${config.slice(topLevelEnd)}`;
+	}
+
+	const insertion = `${command}\n`;
+	return firstTable === -1
+		? `${config}${config.length > 0 && !config.endsWith("\n") ? "\n" : ""}${insertion}`
+		: `${config.slice(0, firstTable)}${insertion}\n${config.slice(firstTable)}`;
+}
+
+// Codex renders its own turn-complete alert by writing an OSC 9 escape to the
+// terminal, which the terminal emulator then posts as a desktop notification.
+// Left on, every alert arrives twice: once from us, once from the terminal.
+// Ours carries the Codex icon, focus-aware urgency and tmux click routing, so
+// we win and Codex's built-in goes quiet.
+function withTuiNotificationsDisabled(config: string): string {
+	const setting = "notifications = false";
+	const tuiHeader = /^[ \t]*\[tui\][ \t]*$/m;
+	const header = tuiHeader.exec(config);
+
+	if (header === null) {
+		const separator =
+			config.length === 0 ? "" : config.endsWith("\n") ? "\n" : "\n\n";
+		return `${config}${separator}[tui]\n${setting}\n`;
+	}
+
+	const bodyStart = header.index + header[0].length;
+	const rest = config.slice(bodyStart);
+	// The [tui] table ends at the next table header, or at end of file.
+	const nextTable = rest.search(/^[ \t]*\[/m);
+	const bodyEnd = nextTable === -1 ? config.length : bodyStart + nextTable;
+	const body = config.slice(bodyStart, bodyEnd);
+	const existingSetting = /^[ \t]*notifications[ \t]*=.*$/m;
+
+	const nextBody = existingSetting.test(body)
+		? body.replace(existingSetting, setting)
+		: `\n${setting}${body.startsWith("\n") ? "" : "\n"}${body}`;
+
+	return `${config.slice(0, bodyStart)}${nextBody}${config.slice(bodyEnd)}`;
+}
 
 async function installCodexHooks(): Promise<void> {
-	const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-	const hooksFile = await resolveSymlink(join(codexHome, "hooks.json"));
+	const hooksFile = await resolveSymlink(join(codexHome(), "hooks.json"));
 	const existing = await readOptionalFile(hooksFile);
 	const document = parseCodexHooksFile(hooksFile, existing);
 	const changed = mergeCodexHooks(document);
@@ -572,22 +380,17 @@ function syncCodexHandler(
 	return true;
 }
 
-function defaultShellRc(): string {
-	return join(homedir(), ".zshrc");
-}
-
-async function installShellHook(rcPath: string): Promise<void> {
+async function installShellHook(rcPath: string): Promise<string> {
 	const expandedRc = expandUser(rcPath);
 	const resolvedRc = await resolveSymlink(expandedRc);
 	const existing = await readOptionalFile(resolvedRc);
-	const desiredBlock = buildShellBlock();
-	const next = mergeShellBlock(existing ?? "", desiredBlock);
+	const next = spliceShellBlock(existing ?? "", buildShellBlock());
 	const displayPath =
 		resolvedRc === expandedRc ? resolvedRc : `${expandedRc} → ${resolvedRc}`;
 
 	if (existing === next) {
 		console.log(`shell:       hook already up to date (${displayPath})`);
-		return;
+		return expandedRc;
 	}
 
 	if (existing !== null) {
@@ -600,44 +403,7 @@ async function installShellHook(rcPath: string): Promise<void> {
 	}
 
 	await writeTextAtomically(resolvedRc, next);
-	console.log(`             open a new shell or run: source ${expandedRc}`);
-}
-
-function expandUser(path: string): string {
-	if (path === "~") {
-		return homedir();
-	}
-
-	if (path.startsWith("~/")) {
-		return join(homedir(), path.slice(2));
-	}
-
-	return path;
-}
-
-function mergeShellBlock(existing: string, block: string): string {
-	const beginIdx = existing.indexOf(SHELL_BLOCK_BEGIN);
-
-	if (beginIdx === -1) {
-		const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
-		const leadingNewline = existing === "" ? "" : "\n";
-		return `${existing}${separator}${leadingNewline}${block}`;
-	}
-
-	const endMarkerIdx = existing.indexOf(SHELL_BLOCK_END, beginIdx);
-
-	if (endMarkerIdx === -1) {
-		throw new Error(
-			`found jaynalerts begin marker in ${SHELL_BLOCK_BEGIN} block but no matching end marker — fix the file manually`,
-		);
-	}
-
-	const endIdx = endMarkerIdx + SHELL_BLOCK_END.length;
-	const trailingNewline = existing[endIdx] === "\n" ? 1 : 0;
-	const before = existing.slice(0, beginIdx);
-	const after = existing.slice(endIdx + trailingNewline);
-
-	return `${before}${block}${after}`;
+	return expandedRc;
 }
 
 async function installClaudeCodeHooks(): Promise<void> {
@@ -664,21 +430,11 @@ async function installClaudeCodeHooks(): Promise<void> {
 	}
 }
 
-function resolveClaudeCodeSettingsFile(): string {
-	return join(homedir(), ".claude", "settings.json");
-}
-
 async function readSettings(settingsFile: string): Promise<JsonObject> {
-	let contents: string;
+	const contents = await readOptionalFile(settingsFile);
 
-	try {
-		contents = await readFile(settingsFile, "utf8");
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") {
-			return {};
-		}
-
-		throw error;
+	if (contents === null) {
+		return {};
 	}
 
 	try {
@@ -696,26 +452,6 @@ async function readSettings(settingsFile: string): Promise<JsonObject> {
 	}
 }
 
-async function createBackupIfNeeded(
-	settingsFile: string,
-	backupFile: string,
-): Promise<boolean> {
-	try {
-		await copyFile(settingsFile, backupFile, 1);
-		return true;
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") {
-			return false;
-		}
-
-		if (isNodeError(error) && error.code === "EEXIST") {
-			return false;
-		}
-
-		throw error;
-	}
-}
-
 function mergeHooks(settings: JsonObject): boolean {
 	let changed = false;
 
@@ -730,7 +466,7 @@ function mergeHooks(settings: JsonObject): boolean {
 
 	const hooks = settings.hooks;
 
-	for (const spec of hookSpecs) {
+	for (const spec of claudeCodeHookSpecs) {
 		if (hooks[spec.event] === undefined) {
 			hooks[spec.event] = [];
 			changed = true;
@@ -762,24 +498,6 @@ function mergeHooks(settings: JsonObject): boolean {
 	return changed;
 }
 
-function findCommandHookGroup(
-	eventHooks: unknown[],
-	command: string,
-): JsonObject | undefined {
-	return eventHooks.find((group): group is JsonObject => {
-		if (!isJsonObject(group) || !Array.isArray(group.hooks)) {
-			return false;
-		}
-
-		return group.hooks.some(
-			(handler) =>
-				isJsonObject(handler) &&
-				handler.type === "command" &&
-				handler.command === command,
-		);
-	});
-}
-
 function syncHookMatcher(
 	group: JsonObject,
 	matcher: string | undefined,
@@ -799,25 +517,6 @@ function syncHookMatcher(
 
 	group.matcher = matcher;
 	return true;
-}
-
-async function writeJsonAtomically(
-	settingsFile: string,
-	settings: JsonObject,
-): Promise<void> {
-	await mkdir(dirname(settingsFile), { recursive: true });
-
-	const temporaryFile = `${settingsFile}.tmp.${process.pid}.${randomUUID()}`;
-
-	try {
-		await writeFile(temporaryFile, `${JSON.stringify(settings, null, 2)}\n`);
-		await rename(temporaryFile, settingsFile);
-	} catch (error) {
-		await Bun.file(temporaryFile)
-			.delete()
-			.catch(() => {});
-		throw error;
-	}
 }
 
 async function installOpencodePlugin(): Promise<void> {
@@ -847,10 +546,6 @@ async function installOpencodePlugin(): Promise<void> {
 		console.log(`             backup: ${backupFile}`);
 	}
 	await linkOpencodePackage();
-}
-
-function resolveOpencodePluginFile(): string {
-	return join(homedir(), ".config", "opencode", "plugins", "jaynalerts.ts");
 }
 
 async function readOpencodePluginSource(): Promise<string> {
@@ -894,22 +589,12 @@ async function linkOpencodePackage(): Promise<void> {
 		const stats = await lstat(opencodeConfigDir);
 
 		if (!stats.isDirectory()) {
-			console.warn(
-				`opencode:    could not auto-link jaynalerts into ${opencodeConfigDir}/`,
-			);
-			console.warn(
-				`             run manually: cd ${opencodeConfigDir} && bun link jaynalerts`,
-			);
+			warnManualLink(opencodeConfigDir);
 			return;
 		}
 	} catch (error) {
 		if (isNodeError(error) && error.code === "ENOENT") {
-			console.warn(
-				`opencode:    could not auto-link jaynalerts into ${opencodeConfigDir}/`,
-			);
-			console.warn(
-				`             run manually: cd ${opencodeConfigDir} && bun link jaynalerts`,
-			);
+			warnManualLink(opencodeConfigDir);
 			return;
 		}
 
@@ -934,43 +619,27 @@ async function linkOpencodePackage(): Promise<void> {
 		]);
 	} catch (error) {
 		stderr = await stderrPromise.catch(() => "");
-		console.warn(
-			`opencode:    could not auto-link jaynalerts into ${opencodeConfigDir}/`,
-		);
 		if (isNodeError(error) && error.code === "ENOENT") {
-			console.warn(
-				`             run manually: cd ${opencodeConfigDir} && bun link jaynalerts`,
-			);
+			warnManualLink(opencodeConfigDir);
 			return;
 		}
 
-		if (stderr.trim().length > 0) {
-			console.warn(`             ${stderr.trim()}`);
-		} else {
-			console.warn(`             ${errorMessage(error)}`);
-		}
-		console.warn(
-			`             run manually: cd ${opencodeConfigDir} && bun link jaynalerts`,
+		warnManualLink(
+			opencodeConfigDir,
+			stderr.trim() === "" ? errorMessage(error) : stderr.trim(),
 		);
 		return;
 	}
 
 	if (exitCode !== 0) {
-		console.warn(
-			`opencode:    could not auto-link jaynalerts into ${opencodeConfigDir}/`,
-		);
 		if (exitCode === 127 || /not found/i.test(stderr)) {
-			console.warn(
-				`             run manually: cd ${opencodeConfigDir} && bun link jaynalerts`,
-			);
+			warnManualLink(opencodeConfigDir);
 			return;
 		}
 
-		if (stderr.trim().length > 0) {
-			console.warn(`             ${stderr.trim()}`);
-		}
-		console.warn(
-			`             run manually: cd ${opencodeConfigDir} && bun link jaynalerts`,
+		warnManualLink(
+			opencodeConfigDir,
+			stderr.trim() === "" ? undefined : stderr.trim(),
 		);
 		return;
 	}
@@ -978,16 +647,16 @@ async function linkOpencodePackage(): Promise<void> {
 	console.log(`opencode:    linked jaynalerts into ${opencodePackageDir}/`);
 }
 
-async function readOptionalFile(file: string): Promise<string | null> {
-	try {
-		return await readFile(file, "utf8");
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") {
-			return null;
-		}
-
-		throw error;
+function warnManualLink(opencodeConfigDir: string, detail?: string): void {
+	console.warn(
+		`opencode:    could not auto-link jaynalerts into ${opencodeConfigDir}/`,
+	);
+	if (detail !== undefined) {
+		console.warn(`             ${detail}`);
 	}
+	console.warn(
+		`             run manually: cd ${opencodeConfigDir} && bun link jaynalerts`,
+	);
 }
 
 async function createExclusiveBackup(
@@ -1007,56 +676,4 @@ async function createExclusiveBackup(
 			{ cause: error },
 		);
 	}
-}
-
-async function writeTextAtomically(
-	file: string,
-	contents: string,
-): Promise<void> {
-	await mkdir(dirname(file), { recursive: true });
-
-	const temporaryFile = `${file}.tmp.${process.pid}.${randomUUID()}`;
-
-	try {
-		await writeFile(temporaryFile, contents);
-		await rename(temporaryFile, file);
-	} catch (error) {
-		await Bun.file(temporaryFile)
-			.delete()
-			.catch(() => {});
-		throw error;
-	}
-}
-
-async function resolveSymlink(file: string): Promise<string> {
-	try {
-		return await realpath(file);
-	} catch (error) {
-		if (isNodeError(error) && error.code === "ENOENT") {
-			try {
-				const target = await readlink(file);
-				return isAbsolute(target) ? target : resolve(dirname(file), target);
-			} catch (readlinkError) {
-				if (isNodeError(readlinkError) && readlinkError.code === "ENOENT") {
-					return file;
-				}
-
-				throw readlinkError;
-			}
-		}
-
-		throw error;
-	}
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-	return error instanceof Error && "code" in error;
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }

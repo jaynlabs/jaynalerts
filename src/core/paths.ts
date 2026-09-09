@@ -10,15 +10,19 @@ export type Paths = {
 	notifierBin: string;
 };
 
-export function notifierBinForSource(paths: Paths, source?: string): string {
-	if (source === undefined) return paths.notifierBin;
+export function notifierAppForSource(paths: Paths, source?: string): string {
+	if (source === undefined) return paths.notifierApp;
 	const suffix = source
 		.split("-")
 		.map((part) => part[0]?.toUpperCase() + part.slice(1))
 		.join("");
+	return join(dirname(paths.notifierApp), `JaynAlertsNotifier${suffix}.app`);
+}
+
+export function notifierBinForSource(paths: Paths, source?: string): string {
+	if (source === undefined) return paths.notifierBin;
 	return join(
-		dirname(paths.notifierApp),
-		`JaynAlertsNotifier${suffix}.app`,
+		notifierAppForSource(paths, source),
 		"Contents",
 		"MacOS",
 		"JaynAlertsNotifier",

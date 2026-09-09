@@ -18,6 +18,8 @@ Notifications are delivered through a tiny bundled Swift app (`JaynAlertsNotifie
 
 Early. macOS only. Requires `bun` and Xcode Command Line Tools (for `swiftc`).
 
+Notification bundles are compiled locally rather than shipped prebuilt — a prebuilt binary would need Developer ID signing and notarization, so local compilation is the pragmatic choice. `init` checks for the toolchain up front and refuses to touch your config files without it, telling you exactly what to install.
+
 ## Install
 
 ```sh
@@ -34,7 +36,8 @@ make setup        # installs prereqs, runs `bun link`, then `jaynalerts init`
 
 Override the shell rc target with `make setup SHELL_RC=/path/to/rc`.
 
-To uninstall the global link: `make uninstall`.
+To remove the integrations, bundles, and config edits: `jaynalerts uninstall`.
+To drop only the global bun link: `make uninstall`.
 
 ## Quickstart
 
@@ -46,7 +49,10 @@ jaynalerts doctor                # inspect each notifier's macOS alert settings
 jaynalerts grant-terminal-notifications
                                  # run once per terminal app (Terminal, iTerm, Ghostty…)
                                  # to trigger macOS' notification-permission prompt
+jaynalerts uninstall --dry-run   # preview what a full removal would revert
 ```
+
+`init` finishes by running the same checks as `doctor` and printing a numbered checklist of the steps only you can do — the permission grants, the Persistent alert-style toggles, and the Focus allowlist entries. Nothing about those is discoverable, so they are handed to you rather than left to be found.
 
 If banners don't appear, open **System Settings → Notifications → JaynAlerts** and make sure alerts are enabled.
 
@@ -55,6 +61,7 @@ If banners don't appear, open **System Settings → Notifications → JaynAlerts
 | Command | Purpose |
 | --- | --- |
 | `init [--claude-code] [--codex] [--opencode] [--shell] [--shell-rc PATH]` | Install hooks/plugin/shell wrapper. With no flags, installs all three agent integrations. |
+| `uninstall [--claude-code] [--codex] [--opencode] [--shell] [--shell-rc PATH] [--bundles] [--config] [--dry-run]` | Revert what `init` installed. With no target flags, removes everything except `config.toml`. |
 | `grant-terminal-notifications` | Prompt the current terminal app for macOS notification permission. |
 | `test` | Send one transient and one sticky notification. |
 | `doctor` | Report authorization and Temporary/Persistent style for every notifier bundle. |
@@ -98,7 +105,9 @@ If host == frontmost and the only attached tmux client is showing the originatin
 
 ## Notifications on macOS
 
-Banners are sent through `JaynAlertsNotifier.app`, built and code-signed (ad-hoc) on `init`. `init` builds one bundle per source — Claude Code, Codex, Ghostty, and a default — each with its own icon and app name, so a banner shows which agent is asking. Bundles are rebuilt automatically when the Swift source or icons change.
+Banners are sent through `JaynAlertsNotifier.app`, built and code-signed (ad-hoc) on `init`. `init` builds one bundle per source — Claude Code, Codex, Ghostty, and a default — each with its own icon and app name, so a banner shows which agent is asking.
+
+Each bundle carries a build stamp (`Contents/Resources/build-stamp`) hashing the package version together with the Swift and plist sources. Every notification path compares that stamp before sending, and rebuilds the bundle if it no longer matches — so upgrading the package cannot leave a stale binary behind. This matters because the old failure mode was silent: a stale notifier simply hung on `--sticky`. `doctor` reports a stale bundle rather than rebuilding it; `init` rebuilds. Set `JAYNALERTS_NO_AUTO_REBUILD=1` to opt out of the automatic rebuild.
 
 - Icons live in `assets/` as `notifier.png`, `claude-code.png`, `codex.png`, `ghostty.icns`, and `opencode.png` (`.png` and `.icns` are both accepted).
 - Per-user icon overrides via the `iconClaudeCode` / `iconCodex` / `iconOpencode` config keys.
@@ -149,6 +158,19 @@ Existing configuration is preserved in both files and a `.jaynalerts.bak` backup
 
 Re-running `init` updates the block in place. A `.jaynalerts.bak` is created on first modification. Open a new shell or `source ~/.zshrc` for it to take effect.
 
+## Uninstall
+
+```sh
+jaynalerts uninstall --dry-run   # print what would change, touch nothing
+jaynalerts uninstall             # revert every integration and delete the bundles
+jaynalerts uninstall --codex     # revert just one integration
+jaynalerts uninstall --config    # also delete ~/.config/jaynalerts/config.toml
+```
+
+Uninstall only removes what jaynalerts owns: hook groups running our exact commands, the `notify` line and `[tui] notifications = false` we wrote, our managed `.zshrc` block, the opencode plugin if it is still ours, and app bundles whose `Info.plist` carries a `dev.jaynalerts.` identifier. Foreign hooks, sibling TOML tables, and your own edits are left alone. `config.toml` is kept unless you pass `--config`, and the `.jaynalerts.bak` backups stay on disk.
+
+One thing it cannot undo: macOS keeps a Notifications row and a Focus allowlist entry for every app bundle it has ever seen, including deleted ones. Uninstall prints where to clear those by hand.
+
 ## Development
 
 ```sh
@@ -164,6 +186,7 @@ Layout:
 - `src/cli/` — CLI entrypoint and subcommands
 - `src/core/` — config, paths, focus detection, notify dispatcher
 - `src/native/` — Swift sources for the notifier bundle and `bundle-id` helper
+- `src/core/native.ts` — bundle building, build stamping, and auto-rebuild
 - `examples/` — sample `config.toml` and the opencode plugin source
 - `test/` — `bun test` suites
 

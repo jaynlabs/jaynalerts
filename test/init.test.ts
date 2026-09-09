@@ -194,6 +194,56 @@ test(
 		expect(first).toContain('notify = ["jaynalerts", "codex-hook"]');
 		expect(first).toContain('model = "gpt-test"');
 		expect(first).toContain("[tui]");
+		// Codex's own OSC 9 alert would otherwise duplicate ours.
+		expect(first).toContain("notifications = false");
+		expect(first).not.toContain("notifications = true");
+
+		await runCodexInitInHome(home);
+		expect(await readFile(configFile, "utf8")).toBe(first);
+	},
+	INIT_TIMEOUT_MS,
+);
+
+test(
+	"codex init adds a [tui] table when the config has none",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		const configFile = join(home, ".codex", "config.toml");
+		await mkdir(join(home, ".codex"));
+		await writeFile(configFile, 'model = "gpt-test"\n');
+
+		await runCodexInitInHome(home);
+		const first = await readFile(configFile, "utf8");
+		expect(first).toContain("[tui]\nnotifications = false");
+
+		await runCodexInitInHome(home);
+		expect(await readFile(configFile, "utf8")).toBe(first);
+	},
+	INIT_TIMEOUT_MS,
+);
+
+test(
+	"codex init disables tui notifications without disturbing sibling tables",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		const configFile = join(home, ".codex", "config.toml");
+		await mkdir(join(home, ".codex"));
+		await writeFile(
+			configFile,
+			'[tui]\ntheme = "dark"\nnotifications = true\n\n[history]\npersistence = "none"\n',
+		);
+
+		await runCodexInitInHome(home);
+		const first = await readFile(configFile, "utf8");
+		expect(first).toContain('theme = "dark"');
+		expect(first).toContain("notifications = false");
+		expect(first).toContain('[history]\npersistence = "none"');
+		// The setting must stay inside [tui], not leak into [history].
+		expect(first.indexOf("notifications = false")).toBeLessThan(
+			first.indexOf("[history]"),
+		);
 
 		await runCodexInitInHome(home);
 		expect(await readFile(configFile, "utf8")).toBe(first);
