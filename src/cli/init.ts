@@ -30,8 +30,10 @@ import {
 	isJsonObject,
 	isNodeError,
 	readOptionalFile,
+	readPiExtensionSource,
 	resolveClaudeCodeSettingsFile,
 	resolveOpencodePluginFile,
+	resolvePiExtensionFile,
 	resolveSymlink,
 	SHELL_BLOCK_BEGIN,
 	SHELL_BLOCK_END,
@@ -44,6 +46,7 @@ type InitOptions = {
 	claudeCode: boolean;
 	codex: boolean;
 	opencode: boolean;
+	pi: boolean;
 	shell: boolean;
 	shellRc: string | null;
 };
@@ -90,6 +93,9 @@ export async function runInit(argv: string[]): Promise<void> {
 	if (options.opencode) {
 		await installOpencodePlugin();
 	}
+	if (options.pi) {
+		await installPiExtension();
+	}
 
 	const shellRc = options.shell
 		? await installShellHook(options.shellRc ?? defaultShellRc())
@@ -108,7 +114,7 @@ async function requireSwiftToolchain(): Promise<void> {
 	throw new Error(swiftToolchainMessage(toolchain.problem));
 }
 
-// macOS keeps four permission grants, four Persistent toggles and the Focus
+// macOS keeps each permission grant, Persistent toggle and the Focus
 // allowlist to itself. Init cannot set them, so it ends by saying exactly which
 // ones are still outstanding instead of leaving them to be discovered.
 async function reportRemainingSteps(
@@ -138,6 +144,7 @@ function parseArgs(argv: string[]): InitOptions {
 	let claudeCode = false;
 	let codex = false;
 	let opencode = false;
+	let pi = false;
 	let shell = false;
 	let shellRc: string | null = null;
 
@@ -156,6 +163,11 @@ function parseArgs(argv: string[]): InitOptions {
 
 		if (arg === "--opencode") {
 			opencode = true;
+			continue;
+		}
+
+		if (arg === "--pi") {
+			pi = true;
 			continue;
 		}
 
@@ -183,17 +195,18 @@ function parseArgs(argv: string[]): InitOptions {
 		throw new Error(`unknown flag: ${arg}`);
 	}
 
-	if (!claudeCode && !codex && !opencode && !shell) {
+	if (!claudeCode && !codex && !opencode && !pi && !shell) {
 		return {
 			claudeCode: true,
 			codex: true,
 			opencode: true,
+			pi: true,
 			shell: false,
 			shellRc: null,
 		};
 	}
 
-	return { claudeCode, codex, opencode, shell, shellRc };
+	return { claudeCode, codex, opencode, pi, shell, shellRc };
 }
 
 async function installCodexNotify(): Promise<void> {
@@ -546,6 +559,33 @@ function syncHookMatcher(
 	return true;
 }
 
+async function installPiExtension(): Promise<void> {
+	const targetFile = resolvePiExtensionFile();
+	const resolvedFile = await resolveSymlink(targetFile);
+	const backupFile = `${resolvedFile}.bak`;
+	const extensionContents = await readPiExtensionSource();
+	const currentContents = await readOptionalFile(resolvedFile);
+
+	if (currentContents === null) {
+		await writeTextAtomically(resolvedFile, extensionContents);
+		console.log(`Pi:          extension installed at ${resolvedFile}`);
+		console.log("             restart Pi or run /reload");
+		return;
+	}
+
+	if (currentContents === extensionContents) {
+		console.log(`Pi:          extension already up to date (${resolvedFile})`);
+		return;
+	}
+
+	const backedUp = await createExclusiveBackup(resolvedFile, backupFile);
+	await writeTextAtomically(resolvedFile, extensionContents);
+	console.log(`Pi:          extension updated at ${resolvedFile}`);
+	if (backedUp) {
+		console.log(`             backup: ${backupFile}`);
+	}
+	console.log("             restart Pi or run /reload");
+}
 async function installOpencodePlugin(): Promise<void> {
 	const targetFile = resolveOpencodePluginFile();
 	const resolvedFile = await resolveSymlink(targetFile);
@@ -675,7 +715,7 @@ async function createExclusiveBackup(
 		}
 
 		throw new Error(
-			`failed to back up opencode plugin from ${sourceFile} to ${backupFile}: ${errorMessage(error)}`,
+			`failed to back up ${sourceFile} to ${backupFile}: ${errorMessage(error)}`,
 			{ cause: error },
 		);
 	}

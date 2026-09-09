@@ -2,7 +2,7 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
 
-export type IconSource = "claude-code" | "codex" | "opencode";
+export type IconSource = "claude-code" | "codex" | "opencode" | "pi";
 
 export function assetsDir(): string {
 	return join(import.meta.dir, "..", "..", "assets");
@@ -45,6 +45,8 @@ function iconShortNames(source: IconSource): string[] {
 			return ["codex"];
 		case "opencode":
 			return ["opencode"];
+		case "pi":
+			return ["pi"];
 	}
 }
 
@@ -67,5 +69,7 @@ function iconOverride(config: Config, source: IconSource): string | null {
 			return config.notifications.iconCodex;
 		case "opencode":
 			return config.notifications.iconOpencode;
+		case "pi":
+			return config.notifications.iconPi;
 	}
 }

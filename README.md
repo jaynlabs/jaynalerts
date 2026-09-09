@@ -1,6 +1,6 @@
 # jaynalerts
 
-A macOS-only CLI that notifies you when your AI coding agent (Codex, Claude Code, opencode) or any long-running shell command needs your attention — but only when your terminal isn't focused.
+A macOS-only CLI that notifies you when your AI coding agent (Codex, Claude Code, opencode, Pi) or any long-running shell command needs your attention — but only when your terminal isn't focused.
 
 ## Overview
 
@@ -10,6 +10,7 @@ jaynalerts wires up:
 - **Codex** human-reviewed `PermissionRequest` hook + `agent-turn-complete`
   notifications
 - **opencode** plugin events
+- **Pi** settled-agent and blocking UI-prompt events
 - An optional **zsh** `preexec`/`precmd` hook for arbitrary long-running commands
 
 Notifications are delivered through a tiny bundled Swift app (`JaynAlertsNotifier.app`) so banners carry a real icon and survive Terminal/iTerm/Ghostty permission quirks. When your terminal is the frontmost window (and, under tmux, the active pane is the one running the agent), notifications are downgraded to **transient** and otherwise are **sticky** so you don't miss them.
@@ -43,7 +44,7 @@ make setup        # installs prereqs, runs `bun link`, then `jaynalerts init`
 
 1. Ensure Xcode CLT, Homebrew, and `bun` are present.
 2. `bun install` and `bun link` (exposes the `jaynalerts` binary globally).
-3. Run `jaynalerts init --claude-code --opencode --shell-rc ~/.zshrc`.
+3. Run `jaynalerts init --claude-code --opencode --pi --shell-rc ~/.zshrc`.
 
 Override the shell rc target with `make setup SHELL_RC=/path/to/rc`.
 
@@ -53,7 +54,7 @@ To drop only the global bun link: `make uninstall`.
 ## Quickstart
 
 ```sh
-jaynalerts init                  # Codex + Claude Code + opencode (no shell hook)
+jaynalerts init                  # all coding-agent integrations (no shell hook)
 jaynalerts init --shell          # also install the zsh hook into ~/.zshrc
 jaynalerts test                  # fire one transient + one sticky banner
 jaynalerts doctor                # inspect each notifier's macOS alert settings
@@ -71,13 +72,14 @@ If banners don't appear, open **System Settings → Notifications → JaynAlerts
 
 | Command | Purpose |
 | --- | --- |
-| `init [--claude-code] [--codex] [--opencode] [--shell] [--shell-rc PATH]` | Install hooks/plugin/shell wrapper. With no flags, installs all three agent integrations. |
-| `uninstall [--claude-code] [--codex] [--opencode] [--shell] [--shell-rc PATH] [--bundles] [--config] [--dry-run]` | Revert what `init` installed. With no target flags, removes everything except `config.toml`. |
+| `init [--claude-code] [--codex] [--opencode] [--pi] [--shell] [--shell-rc PATH]` | Install hooks/extensions/plugins/shell wrapper. With no flags, installs all four agent integrations. |
+| `uninstall [--claude-code] [--codex] [--opencode] [--pi] [--shell] [--shell-rc PATH] [--bundles] [--config] [--dry-run]` | Revert what `init` installed. With no target flags, removes everything except `config.toml`. |
 | `grant-terminal-notifications` | Prompt the current terminal app for macOS notification permission. |
 | `test` | Send one transient and one sticky notification. |
 | `doctor` | Report authorization and Temporary/Persistent style for every notifier bundle. |
 | `claude-code-hook <on-stop\|on-notification>` | Internal — invoked by Claude Code. |
 | `codex-hook <json\|on-permission-request>` | Internal — invoked by Codex. |
+| `pi-hook <on-agent-settled\|on-ui-prompt>` | Internal — invoked by the Pi extension. |
 | `notify-command --cmd C --exit N --duration-ms N` | Internal — invoked by the zsh hook. |
 
 Flags: `--help/-h`, `--version/-v`. Set `JAYNALERTS_DEBUG=1` for verbose errors.
@@ -96,10 +98,11 @@ tmuxZoomOnClick = true            # zoom the originating pane when its banner is
 # iconClaudeCode = "/absolute/path/to/icon.png"
 # iconCodex      = "/absolute/path/to/icon.png"
 # iconOpencode   = "/absolute/path/to/icon.png"
+# iconPi         = "/absolute/path/to/icon.png"
 
 [shell]
 thresholdMs = 15000              # only notify for commands longer than this
-ignore = ["vim", "nvim", "ssh", "tmux", "claude", "opencode", ...]
+ignore = ["vim", "nvim", "ssh", "tmux", "claude", "opencode", "pi", ...]
 ```
 
 Override the install root with `JAYNALERTS_HOME` (otherwise XDG paths are used; the notifier bundle is built into `~/Applications/JaynAlertsNotifier.app`).
@@ -118,12 +121,12 @@ If host == frontmost and the only attached tmux client is showing the originatin
 
 ## Notifications on macOS
 
-Banners are sent through `JaynAlertsNotifier.app`, built and code-signed (ad-hoc) on `init`. `init` builds one bundle per source — Claude Code, Codex, and a default — each with its own icon and app name, so a banner shows which agent is asking. A Ghostty-branded bundle is built only where Ghostty is installed (or when you are running under it); on every other machine nothing Ghostty-related lands in `~/Applications`, in System Settings → Notifications, or in the Focus allowlist checklist.
+Banners are sent through `JaynAlertsNotifier.app`, built and code-signed (ad-hoc) on `init`. `init` builds one bundle per source — Claude Code, Codex, Pi, and a default — each with its own icon and app name, so a banner shows which agent is asking. A Ghostty-branded bundle is built only where Ghostty is installed (or when you are running under it); on every other machine nothing Ghostty-related lands in `~/Applications`, in System Settings → Notifications, or in the Focus allowlist checklist.
 
 Each bundle carries a build stamp (`Contents/Resources/build-stamp`) hashing the package version together with the Swift and plist sources. Every notification path compares that stamp before sending, and rebuilds the bundle if it no longer matches — so upgrading the package cannot leave a stale binary behind. This matters because the old failure mode was silent: a stale notifier simply hung on `--sticky`. `doctor` reports a stale bundle rather than rebuilding it; `init` rebuilds. Set `JAYNALERTS_NO_AUTO_REBUILD=1` to opt out of the automatic rebuild.
 
-- Icons live in `assets/` as `notifier.png`, `claude-code.png`, `codex.png`, `ghostty.icns`, and `opencode.png` (`.png` and `.icns` are both accepted).
-- Per-user icon overrides via the `iconClaudeCode` / `iconCodex` / `iconOpencode` config keys.
+- Icons live in `assets/` as `notifier.png`, `claude-code.png`, `codex.png`, `ghostty.icns`, `opencode.png`, and `pi.png` (`.png` and `.icns` are both accepted).
+- Per-user icon overrides via the `iconClaudeCode` / `iconCodex` / `iconOpencode` / `iconPi` config keys.
 - Run `jaynalerts grant-terminal-notifications` once per terminal emulator you use, so macOS associates the permission with that terminal.
 - Sticky notifications require **Persistent** alerts. New bundles request that default; run `jaynalerts doctor` to see the effective setting and change any **Temporary** entry in System Settings → Notifications.
 - A tmux notification carries its own origin, so concurrent sessions each route to their own pane. Clicking one switches the captured client to the exact pane and, by default, zooms that pane. Set `tmuxZoomOnClick = false` to keep the normal split layout.
@@ -159,6 +162,15 @@ Existing configuration is preserved in both files and a `.jaynalerts.bak` backup
 
 `jaynalerts init --opencode` writes `~/.config/opencode/plugins/jaynalerts.ts` (copied from `examples/opencode-plugin.ts`) and symlinks this install into `~/.config/opencode/node_modules/jaynalerts` so the plugin can `import "jaynalerts"`. A real `node_modules/jaynalerts` directory — jaynalerts installed there as a dependency — is left alone. An existing plugin file is backed up to `jaynalerts.ts.bak` before being overwritten.
 
+## Pi setup
+
+`jaynalerts init --pi` writes a global extension to `~/.pi/agent/extensions/jaynalerts.ts` (or `$PI_CODING_AGENT_DIR/extensions/jaynalerts.ts`). It listens for:
+
+- `agent_settled`, which fires only after Pi has no automatic retry, compaction retry, or queued continuation left, and sends a **Done** alert.
+- `ui_prompt_start`, which sends an **Action required** alert when another extension opens a blocking select, confirmation, input, editor, or custom prompt.
+
+The prompt event requires Pi 0.84.4 or newer. Existing extension files are preserved in `jaynalerts.ts.bak` before the first update. Restart Pi or run `/reload` after installing.
+
 ## Shell hook (zsh)
 
 `jaynalerts init --shell [--shell-rc PATH]` inserts a managed block into your `.zshrc`:
@@ -179,10 +191,11 @@ The block is zsh-only — `&!` and `add-zsh-hook` are zsh syntax, and bash canno
 jaynalerts uninstall --dry-run   # print what would change, touch nothing
 jaynalerts uninstall             # revert every integration and delete the bundles
 jaynalerts uninstall --codex     # revert just one integration
+jaynalerts uninstall --pi        # remove the Pi extension
 jaynalerts uninstall --config    # also delete ~/.config/jaynalerts/config.toml
 ```
 
-Uninstall only removes what jaynalerts owns: hook groups running our exact commands, the `notify` line and `[tui] notifications = false` we wrote, our managed `.zshrc` block, the opencode plugin if it is still ours together with the `node_modules/jaynalerts` symlink we made (a real package directory there is left alone), and app bundles whose `Info.plist` carries a `dev.jaynalerts.` identifier. Foreign hooks, sibling TOML tables, and your own edits are left alone. `config.toml` is kept unless you pass `--config`, and the `.jaynalerts.bak` backups stay on disk.
+Uninstall only removes what jaynalerts owns: hook groups running our exact commands, the `notify` line and `[tui] notifications = false` we wrote, our managed `.zshrc` block, the opencode plugin if it is still ours together with the `node_modules/jaynalerts` symlink we made (a real package directory there is left alone), the managed Pi extension, and app bundles whose `Info.plist` carries a `dev.jaynalerts.` identifier. Foreign hooks, sibling TOML tables, and your own edits are left alone. `config.toml` is kept unless you pass `--config`, and the `.jaynalerts.bak` backups stay on disk.
 
 One thing it cannot undo: macOS keeps a Notifications row and a Focus allowlist entry for every app bundle it has ever seen, including deleted ones. Uninstall prints where to clear those by hand.
 
@@ -202,7 +215,7 @@ Layout:
 - `src/core/` — config, paths, focus detection, notify dispatcher
 - `src/native/` — Swift sources for the notifier bundle and `bundle-id` helper
 - `src/core/native.ts` — bundle building, build stamping, and auto-rebuild
-- `examples/` — sample `config.toml` and the opencode plugin source
+- `examples/` — sample configuration plus the opencode and Pi integration sources
 - `test/` — `bun test` suites
 
 ## Credits

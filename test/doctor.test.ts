@@ -16,7 +16,7 @@ const originalTermProgram = process.env.TERM_PROGRAM;
 const originalLog = console.log;
 const temporaryHomes: string[] = [];
 
-const VARIANTS = [undefined, "claude-code", "codex", "ghostty"] as const;
+const VARIANTS = [undefined, "claude-code", "codex", "pi", "ghostty"] as const;
 
 type Settings = {
 	authorization: string;
@@ -75,6 +75,7 @@ test("doctor reports every bundle as persistent when macOS agrees", async () => 
 	expect(output).toContain("JaynAlerts: authorized, persistent alerts");
 	expect(output).toContain("Claude Code: authorized, persistent alerts");
 	expect(output).toContain("Codex: authorized, persistent alerts");
+	expect(output).toContain("Pi: authorized, persistent alerts");
 	expect(output).toContain("Ghostty: authorized, persistent alerts");
 	expect(output).toContain(
 		"All notifier bundles are authorized and persistent",

@@ -29,6 +29,7 @@ export const SHELL_BLOCK_BEGIN = "# jaynalerts begin (managed — do not edit)";
 export const SHELL_BLOCK_END = "# jaynalerts end";
 
 export const CODEX_NOTIFY_COMMAND = 'notify = ["jaynalerts", "codex-hook"]';
+export const PI_EXTENSION_MARKER = "jaynalerts Pi integration — managed";
 
 export const claudeCodeHookSpecs: HookSpec[] = [
 	{
@@ -64,6 +65,18 @@ export function resolveClaudeCodeSettingsFile(): string {
 
 export function resolveOpencodePluginFile(): string {
 	return join(homedir(), ".config", "opencode", "plugins", "jaynalerts.ts");
+}
+
+export function resolvePiExtensionFile(): string {
+	const piAgentDir =
+		process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+	return join(piAgentDir, "extensions", "jaynalerts.ts");
+}
+
+export async function readPiExtensionSource(): Promise<string> {
+	return Bun.file(
+		join(import.meta.dir, "..", "..", "examples", "pi-extension.ts"),
+	).text();
 }
 
 export function defaultShellRc(): string {

@@ -15,6 +15,7 @@
 		"claude-code",
 		"codex",
 		"opencode",
+		"pi-coding-agent",
 		"cli"
 	],
 	"type": "module",

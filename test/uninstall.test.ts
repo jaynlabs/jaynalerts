@@ -10,8 +10,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PI_EXTENSION_MARKER } from "../src/cli/integrations.ts";
 
-// init compiles four Swift bundles, so a full install/uninstall round trip
+// init compiles five notifier bundles, so a full install/uninstall round trip
 // does not fit in bun's default timeout.
 const CLI_TIMEOUT_MS = 120_000;
 
@@ -44,6 +45,7 @@ test(
 			"--claude-code",
 			"--codex",
 			"--opencode",
+			"--pi",
 			"--shell",
 		]);
 		await runCli(home, ["uninstall"]);
@@ -76,6 +78,9 @@ test(
 		).rejects.toThrow();
 		await expect(
 			stat(join(home, ".config", "opencode", "plugins", "jaynalerts.ts")),
+		).rejects.toThrow();
+		await expect(
+			stat(join(home, ".pi", "agent", "extensions", "jaynalerts.ts")),
 		).rejects.toThrow();
 	},
 	CLI_TIMEOUT_MS,
@@ -163,6 +168,31 @@ test(
 );
 
 test(
+	"uninstall only removes a managed Pi extension",
+	async () => {
+		const home = await newHome();
+		const extension = join(home, ".pi", "agent", "extensions", "jaynalerts.ts");
+		await mkdir(join(extension, ".."), { recursive: true });
+		await writeFile(extension, `// ${PI_EXTENSION_MARKER}\n`);
+
+		const preview = await runCli(home, ["uninstall", "--pi", "--dry-run"]);
+		expect(preview).toContain("removed extension");
+		expect((await stat(extension)).isFile()).toBe(true);
+
+		await runCli(home, ["uninstall", "--pi"]);
+		await expect(stat(extension)).rejects.toThrow();
+
+		await writeFile(extension, "// user-owned Pi extension\n");
+		const stdout = await runCli(home, ["uninstall", "--pi"]);
+		expect(stdout).toContain("left");
+		expect(await readFile(extension, "utf8")).toBe(
+			"// user-owned Pi extension\n",
+		);
+	},
+	CLI_TIMEOUT_MS,
+);
+
+test(
 	"uninstall removes the opencode link it made and leaves a real one alone",
 	async () => {
 		const home = await newHome();
@@ -212,7 +242,12 @@ async function runCli(home: string, args: string[]): Promise<string> {
 		[process.execPath, "run", "src/cli/index.ts", ...args],
 		{
 			cwd: process.cwd(),
-			env: { ...process.env, HOME: home, CODEX_HOME: join(home, ".codex") },
+			env: {
+				...process.env,
+				HOME: home,
+				CODEX_HOME: join(home, ".codex"),
+				PI_CODING_AGENT_DIR: join(home, ".pi", "agent"),
+			},
 			stderr: "pipe",
 			stdout: "pipe",
 		},

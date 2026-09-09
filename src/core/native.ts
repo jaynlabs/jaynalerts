@@ -40,6 +40,7 @@ export const NOTIFIER_VARIANTS: readonly NotifierVariant[] = [
 	{ source: undefined, label: "JaynAlerts", icon: "notifier" },
 	{ source: "claude-code", label: "Claude Code", icon: "claude-code" },
 	{ source: "codex", label: "Codex", icon: "codex" },
+	{ source: "pi", label: "Pi", icon: "pi" },
 	{ source: "ghostty", label: "Ghostty", icon: "ghostty" },
 ] as const;
 
@@ -138,7 +139,7 @@ export async function readStamp(file: string): Promise<string | null> {
 	}
 }
 
-// Cheap: four small reads plus one hash of the Swift sources, all cached for
+// Cheap: five small reads plus one hash of the Swift sources, all cached for
 // the rest of the process. Safe to call on every hook invocation.
 export async function staleNotifierVariants(
 	paths: Paths,

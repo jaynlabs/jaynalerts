@@ -1,4 +1,4 @@
-export type Source = "claude-code" | "codex" | "ghostty" | "opencode";
+export type Source = "claude-code" | "codex" | "ghostty" | "opencode" | "pi";
 
 export type NotifyUrgency = "transient" | "sticky";
 

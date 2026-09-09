@@ -24,7 +24,7 @@ import {
 } from "../src/core/native.ts";
 import { notifierAppForSource, resolvePaths } from "../src/core/paths.ts";
 
-// Building four bundles means four swiftc invocations behind one compile.
+// Building five notifier bundles plus the helper can exceed bun's default timeout.
 const BUILD_TIMEOUT_MS = 120_000;
 const hasSwiftc = Bun.which("swiftc") !== null;
 const swiftTest = hasSwiftc ? test : test.skip;
@@ -59,6 +59,7 @@ test("every variant is stale before anything is built", async () => {
 		"JaynAlerts",
 		"Claude Code",
 		"Codex",
+		"Pi",
 		"Ghostty",
 	]);
 	expect(await helperIsStale(paths)).toBe(true);
@@ -197,6 +198,7 @@ test("the Ghostty bundle is skipped on a machine without Ghostty", async () => {
 		"JaynAlerts",
 		"Claude Code",
 		"Codex",
+		"Pi",
 	]);
 });
 
@@ -214,6 +216,7 @@ test("an installed Ghostty opts the bundle back in", async () => {
 		"JaynAlerts",
 		"Claude Code",
 		"Codex",
+		"Pi",
 		"Ghostty",
 	]);
 });
@@ -228,6 +231,7 @@ test("running under Ghostty opts the bundle back in without an app path", async 
 		"JaynAlerts",
 		"Claude Code",
 		"Codex",
+		"Pi",
 		"Ghostty",
 	]);
 });
@@ -247,5 +251,6 @@ test("a skipped variant is not reported as stale", async () => {
 		"JaynAlerts",
 		"Claude Code",
 		"Codex",
+		"Pi",
 	]);
 });

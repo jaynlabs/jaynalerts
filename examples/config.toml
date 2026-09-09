@@ -10,4 +10,4 @@ tmuxZoomOnClick = true
 # Notify when a shell command (with the zsh hook installed) exceeds thresholdMs.
 [shell]
 thresholdMs = 15000
-ignore = ["vim", "nvim", "vi", "emacs", "nano", "less", "more", "man", "ssh", "tmux", "screen", "htop", "top", "btop", "fzf", "watch", "tail", "claude", "opencode"]
+ignore = ["vim", "nvim", "vi", "emacs", "nano", "less", "more", "man", "ssh", "tmux", "screen", "htop", "top", "btop", "fzf", "watch", "tail", "claude", "opencode", "pi"]

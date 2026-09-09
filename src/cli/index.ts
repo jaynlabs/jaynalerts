@@ -8,10 +8,10 @@ Usage:
   jaynalerts <command> [options]
 
 Commands:
-  init [--claude-code] [--codex] [--opencode] [--shell] [--shell-rc PATH]
+  init [--claude-code] [--codex] [--opencode] [--pi] [--shell] [--shell-rc PATH]
                               Install coding-agent integrations / shell hook
                               --shell-rc PATH overrides the default ~/.zshrc target
-  uninstall [--claude-code] [--codex] [--opencode] [--shell] [--bundles]
+  uninstall [--claude-code] [--codex] [--opencode] [--pi] [--shell] [--bundles]
             [--config] [--dry-run]
                               Remove the notifier bundles and revert every
                               config edit init made. With no flags, removes
@@ -24,6 +24,8 @@ Commands:
   claude-code-hook <event>    Internal: invoked by Claude Code hooks
   codex-hook <json|on-permission-request>
                               Internal: invoked by Codex notify and hooks
+  pi-hook <on-agent-settled|on-ui-prompt>
+                              Internal: invoked by the Pi extension
   notify-command --cmd C --exit N --duration-ms N
                               Internal: invoked by the shell hook on each command
 
@@ -79,6 +81,12 @@ async function main(): Promise<void> {
 	if (command === "codex-hook") {
 		const { runCodexHook } = await import("./codex-hook.ts");
 		await runCodexHook(process.argv.slice(3));
+		return;
+	}
+
+	if (command === "pi-hook") {
+		const { runPiHook } = await import("./pi-hook.ts");
+		await runPiHook(process.argv.slice(3));
 		return;
 	}
 

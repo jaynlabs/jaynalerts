@@ -10,7 +10,7 @@ help:
 	@echo "  prereqs    Ensure Xcode CLT, Homebrew, and bun are installed"
 	@echo "  install    Link jaynalerts globally with bun link"
 	@echo "  uninstall  Remove the global bun link"
-	@echo "  init       Run jaynalerts init (Claude Code + opencode by default)"
+	@echo "  init       Run jaynalerts init (all coding-agent integrations by default)"
 	@echo "  test       Run tests"
 	@echo "  lint       Run Biome checks"
 	@echo "  format     Format files with Biome"
@@ -21,7 +21,7 @@ setup: prereqs
 	bun install
 	bun link
 	@which jaynalerts
-	jaynalerts init --claude-code --opencode --shell-rc "$(SHELL_RC)"
+	jaynalerts init --claude-code --opencode --pi --shell-rc "$(SHELL_RC)"
 
 prereqs:
 	@command -v xcode-select >/dev/null 2>&1 && (xcode-select -p >/dev/null 2>&1 || xcode-select --install) || true

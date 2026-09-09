@@ -20,9 +20,11 @@ import {
 	hookGroupOwnsCommand,
 	isJsonObject,
 	isNodeError,
+	PI_EXTENSION_MARKER,
 	readOptionalFile,
 	resolveClaudeCodeSettingsFile,
 	resolveOpencodePluginFile,
+	resolvePiExtensionFile,
 	resolveSymlink,
 	spliceShellBlock,
 	writeJsonAtomically,
@@ -33,6 +35,7 @@ type UninstallOptions = {
 	claudeCode: boolean;
 	codex: boolean;
 	opencode: boolean;
+	pi: boolean;
 	shell: boolean;
 	shellRc: string | null;
 	bundles: boolean;
@@ -59,6 +62,9 @@ export async function runUninstall(argv: string[]): Promise<void> {
 	}
 	if (options.opencode) {
 		await removeOpencodePlugin(options, changes);
+	}
+	if (options.pi) {
+		await removePiExtension(options, changes);
 	}
 	if (options.shell) {
 		await removeShellHook(options, changes);
@@ -122,6 +128,7 @@ function parseArgs(argv: string[]): UninstallOptions {
 	let claudeCode = false;
 	let codex = false;
 	let opencode = false;
+	let pi = false;
 	let shell = false;
 	let shellRc: string | null = null;
 	let bundles = false;
@@ -156,6 +163,12 @@ function parseArgs(argv: string[]): UninstallOptions {
 
 		if (arg === "--opencode") {
 			opencode = true;
+			selective = true;
+			continue;
+		}
+
+		if (arg === "--pi") {
+			pi = true;
 			selective = true;
 			continue;
 		}
@@ -200,6 +213,7 @@ function parseArgs(argv: string[]): UninstallOptions {
 			claudeCode: true,
 			codex: true,
 			opencode: true,
+			pi: true,
 			shell: true,
 			shellRc,
 			bundles: true,
@@ -212,6 +226,7 @@ function parseArgs(argv: string[]): UninstallOptions {
 		claudeCode,
 		codex,
 		opencode,
+		pi,
 		shell,
 		shellRc,
 		bundles,
@@ -470,6 +485,32 @@ async function removeOpencodePlugin(
 			`opencode:    could not remove ${linkedPackage}: ${errorMessage(error)}`,
 		);
 	}
+}
+
+async function removePiExtension(
+	options: UninstallOptions,
+	changes: Change[],
+): Promise<void> {
+	const extensionFile = await resolveSymlink(resolvePiExtensionFile());
+	const contents = await readOptionalFile(extensionFile);
+
+	if (contents === null) {
+		console.log(`Pi:          nothing to remove (${extensionFile})`);
+		return;
+	}
+
+	if (!contents.includes(PI_EXTENSION_MARKER)) {
+		console.log(
+			`Pi:          left ${extensionFile} alone — it is not the jaynalerts extension`,
+		);
+		return;
+	}
+
+	if (!options.dryRun) {
+		await rm(extensionFile, { force: true });
+	}
+	changes.push({ label: "Pi extension", detail: extensionFile });
+	console.log(`Pi:          removed extension (${extensionFile})`);
 }
 
 async function removeShellHook(
