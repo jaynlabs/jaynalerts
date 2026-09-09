@@ -11,6 +11,7 @@ export type Config = {
 		iconClaudeCode: string | null;
 		iconCodex: string | null;
 		iconOpencode: string | null;
+		iconPi: string | null;
 	};
 	shell: {
 		thresholdMs: number;
@@ -26,6 +27,7 @@ export const DEFAULT_CONFIG: Config = {
 		iconClaudeCode: null,
 		iconCodex: null,
 		iconOpencode: null,
+		iconPi: null,
 	},
 	shell: {
 		thresholdMs: 15_000,
@@ -49,6 +51,7 @@ export const DEFAULT_CONFIG: Config = {
 			"tail",
 			"claude",
 			"opencode",
+			"pi",
 		],
 	},
 };
@@ -168,6 +171,11 @@ function mergeNotificationsConfig(
 			"notifications.iconOpencode",
 			table.iconOpencode,
 			DEFAULT_CONFIG.notifications.iconOpencode,
+		),
+		iconPi: nullableStringOrDefault(
+			"notifications.iconPi",
+			table.iconPi,
+			DEFAULT_CONFIG.notifications.iconPi,
 		),
 	};
 }

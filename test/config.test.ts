@@ -8,6 +8,7 @@ import { resolvePaths } from "../src/core/paths.ts";
 
 test("tmux zoom on click defaults to enabled", () => {
 	expect(DEFAULT_CONFIG.notifications.tmuxZoomOnClick).toBe(true);
+	expect(DEFAULT_CONFIG.notifications.iconPi).toBeNull();
 });
 
 test("tmux zoom on click can be disabled", async () => {

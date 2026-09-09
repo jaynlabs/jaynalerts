@@ -26,6 +26,39 @@ afterEach(async () => {
 });
 
 test(
+	"Pi init writes the global extension and is idempotent",
+	async () => {
+		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
+		temporaryHomes.push(home);
+		const piDir = join(home, ".pi", "agent");
+		const target = join(piDir, "extensions", "jaynalerts.ts");
+
+		await runPiInitInHome(home, piDir);
+
+		const source = await readFile("examples/pi-extension.ts", "utf8");
+		expect(await readFile(target, "utf8")).toBe(source);
+		const piNotifierPlist = await readFile(
+			join(
+				home,
+				"Applications",
+				"JaynAlertsNotifierPi.app",
+				"Contents",
+				"Info.plist",
+			),
+			"utf8",
+		);
+		expect(piNotifierPlist).toContain("<string>Pi</string>");
+		const firstStat = await stat(target);
+
+		await runPiInitInHome(home, piDir);
+
+		expect(await readFile(target, "utf8")).toBe(source);
+		expect((await stat(target)).mtimeMs).toBe(firstStat.mtimeMs);
+	},
+	INIT_TIMEOUT_MS,
+);
+
+test(
 	"opencode init writes plugin and is idempotent",
 	async () => {
 		const home = await mkdtemp(join(tmpdir(), "jaynalerts-init-"));
@@ -354,4 +387,21 @@ async function runCodexInitInHome(home: string): Promise<void> {
 		new Response(proc.stderr).text(),
 	]);
 	if (exitCode !== 0) throw new Error(`codex init failed: ${stderr}`);
+}
+
+async function runPiInitInHome(home: string, piDir: string): Promise<void> {
+	const proc = Bun.spawn(
+		[process.execPath, "run", "src/cli/index.ts", "init", "--pi"],
+		{
+			cwd: process.cwd(),
+			env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: piDir },
+			stderr: "pipe",
+			stdout: "pipe",
+		},
+	);
+	const [exitCode, stderr] = await Promise.all([
+		proc.exited,
+		new Response(proc.stderr).text(),
+	]);
+	if (exitCode !== 0) throw new Error(`Pi init failed: ${stderr}`);
 }

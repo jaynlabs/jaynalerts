@@ -21,6 +21,7 @@ type InitOptions = {
 	claudeCode: boolean;
 	codex: boolean;
 	opencode: boolean;
+	pi: boolean;
 	shell: boolean;
 	shellRc: string | null;
 };
@@ -95,12 +96,15 @@ export async function runInit(argv: string[]): Promise<void> {
 	if (options.opencode) {
 		await installOpencodePlugin();
 	}
+	if (options.pi) {
+		await installPiExtension();
+	}
 
 	if (options.shell) {
 		await installShellHook(options.shellRc ?? defaultShellRc());
 	}
 
-	if (options.claudeCode || options.codex || options.opencode) {
+	if (options.claudeCode || options.codex || options.opencode || options.pi) {
 		await buildFrontmostHelper();
 		await buildNotifierBundle();
 	}
@@ -180,6 +184,7 @@ async function buildNotifierBundle(): Promise<void> {
 		{ source: undefined, label: "JaynAlerts", icon: "notifier" },
 		{ source: "claude-code", label: "Claude Code", icon: "claude-code" },
 		{ source: "codex", label: "Codex", icon: "codex" },
+		{ source: "pi", label: "Pi", icon: "pi" },
 		{ source: "ghostty", label: "Ghostty", icon: "ghostty" },
 	] as const;
 
@@ -342,6 +347,7 @@ function parseArgs(argv: string[]): InitOptions {
 	let claudeCode = false;
 	let codex = false;
 	let opencode = false;
+	let pi = false;
 	let shell = false;
 	let shellRc: string | null = null;
 
@@ -360,6 +366,11 @@ function parseArgs(argv: string[]): InitOptions {
 
 		if (arg === "--opencode") {
 			opencode = true;
+			continue;
+		}
+
+		if (arg === "--pi") {
+			pi = true;
 			continue;
 		}
 
@@ -387,17 +398,18 @@ function parseArgs(argv: string[]): InitOptions {
 		throw new Error(`unknown flag: ${arg}`);
 	}
 
-	if (!claudeCode && !codex && !opencode && !shell) {
+	if (!claudeCode && !codex && !opencode && !pi && !shell) {
 		return {
 			claudeCode: true,
 			codex: true,
 			opencode: true,
+			pi: true,
 			shell: false,
 			shellRc: null,
 		};
 	}
 
-	return { claudeCode, codex, opencode, shell, shellRc };
+	return { claudeCode, codex, opencode, pi, shell, shellRc };
 }
 
 async function installCodexNotify(): Promise<void> {
@@ -820,6 +832,52 @@ async function writeJsonAtomically(
 	}
 }
 
+async function installPiExtension(): Promise<void> {
+	const targetFile = resolvePiExtensionFile();
+	const resolvedFile = await resolveSymlink(targetFile);
+	const backupFile = `${resolvedFile}.bak`;
+	const extensionContents = await readPiExtensionSource();
+	const currentContents = await readOptionalFile(resolvedFile);
+
+	if (currentContents === null) {
+		await writeTextAtomically(resolvedFile, extensionContents);
+		console.log(`Pi:          extension installed at ${resolvedFile}`);
+		console.log("             restart Pi or run /reload");
+		return;
+	}
+
+	if (currentContents === extensionContents) {
+		console.log(`Pi:          extension already up to date (${resolvedFile})`);
+		return;
+	}
+
+	const backedUp = await createExclusiveBackup(resolvedFile, backupFile);
+	await writeTextAtomically(resolvedFile, extensionContents);
+	console.log(`Pi:          extension updated at ${resolvedFile}`);
+	if (backedUp) {
+		console.log(`             backup: ${backupFile}`);
+	}
+	console.log("             restart Pi or run /reload");
+}
+
+function resolvePiExtensionFile(): string {
+	const piAgentDir =
+		process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+	return join(piAgentDir, "extensions", "jaynalerts.ts");
+}
+
+async function readPiExtensionSource(): Promise<string> {
+	const extensionPath = join(
+		import.meta.dir,
+		"..",
+		"..",
+		"examples",
+		"pi-extension.ts",
+	);
+
+	return Bun.file(extensionPath).text();
+}
+
 async function installOpencodePlugin(): Promise<void> {
 	const targetFile = resolveOpencodePluginFile();
 	const resolvedFile = await resolveSymlink(targetFile);
@@ -1003,7 +1061,7 @@ async function createExclusiveBackup(
 		}
 
 		throw new Error(
-			`failed to back up opencode plugin from ${sourceFile} to ${backupFile}: ${errorMessage(error)}`,
+			`failed to back up ${sourceFile} to ${backupFile}: ${errorMessage(error)}`,
 			{ cause: error },
 		);
 	}

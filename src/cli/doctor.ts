@@ -12,6 +12,7 @@ const NOTIFIER_VARIANTS = [
 	{ source: undefined, label: "JaynAlerts" },
 	{ source: "claude-code", label: "Claude Code" },
 	{ source: "codex", label: "Codex" },
+	{ source: "pi", label: "Pi" },
 	{ source: "ghostty", label: "Ghostty" },
 ] as const;
 
