@@ -108,14 +108,30 @@ export function assetsRoot(): string {
 	return join(import.meta.dir, "..", "..", "assets");
 }
 
-// The stamp changes whenever the package version changes or anyone edits the
-// sources a bundle is built from, which is exactly when a rebuild is due.
+// Icons are hashed too, so editing an asset rebuilds the bundles that embed
+// it; missing icons are skipped instead of failing the whole stamp.
+const NOTIFIER_ICON_ASSETS = [
+	"notifier.png",
+	"claude-code.png",
+	"codex.png",
+	"opencode.png",
+	"pi.png",
+	"ghostty.icns",
+];
+
 export async function notifierStamp(): Promise<string> {
 	notifierStampPromise ??= computeStamp([
 		join(nativeDir(), "notifier.swift"),
 		join(nativeDir(), "notifier.plist"),
+		...(await existingIconAssets()),
 	]);
 	return notifierStampPromise;
+}
+
+async function existingIconAssets(): Promise<string[]> {
+	const paths = NOTIFIER_ICON_ASSETS.map((name) => join(assetsRoot(), name));
+	const checks = await Promise.all(paths.map((path) => fileExists(path)));
+	return paths.filter((_, index) => checks[index]);
 }
 
 export async function helperStamp(): Promise<string> {
