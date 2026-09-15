@@ -2,7 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { permissionRequestNeedsUserAction } from "../src/cli/codex-hook.ts";
+import {
+	isTitleGenerationTurn,
+	permissionRequestNeedsUserAction,
+} from "../src/cli/codex-hook.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -77,6 +80,18 @@ test("fails open when approval routing cannot be verified", async () => {
 		),
 	).toBe(true);
 	expect(await permissionRequestNeedsUserAction({})).toBe(true);
+});
+
+test("ignores the background thread-title turn", () => {
+	expect(
+		isTitleGenerationTurn({
+			type: "agent-turn-complete",
+			"input-messages": [
+				"Generate a concise, single-line task title of at most 36 characters and under five words where possible. Start with an imperative verb. Capitalize only the first word unless the user's language, proper nouns, acronyms, or code terms require otherwise. Preserve ticket references exactly. Write in the user's language. Do not use quotes, markdown, or trailing punctuation. Do not answer the request.\n\nUser prompt:\nsay hi",
+			],
+			"last-assistant-message": '{"title":"Say hi"}',
+		}),
+	).toBe(true);
 });
 
 function hookPayload(

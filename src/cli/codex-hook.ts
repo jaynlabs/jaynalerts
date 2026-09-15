@@ -7,6 +7,7 @@ type HookEvent = "on-permission-request";
 type CodexNotification = {
 	type?: unknown;
 	cwd?: unknown;
+	"input-messages"?: unknown;
 	"last-assistant-message"?: unknown;
 };
 
@@ -17,6 +18,7 @@ const AUTOMATIC_APPROVAL_REVIEWERS = new Set([
 const JSONL_READ_CHUNK_BYTES = 64 * 1024;
 const MAX_JSONL_RECORD_BYTES = 1024 * 1024;
 const TURN_CONTEXT_MARKER = Buffer.from('"type":"turn_context"');
+const TITLE_PROMPT_PREFIX = "Generate a concise, single-line task title";
 
 export async function runCodexHook(argv: string[]): Promise<void> {
 	const [first, ...extraArgs] = argv;
@@ -50,6 +52,7 @@ async function handleLegacyNotify(raw: string): Promise<void> {
 	}
 
 	if (payload.type !== "agent-turn-complete") return;
+	if (isTitleGenerationTurn(payload)) return;
 	const cwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
 	const message =
 		typeof payload["last-assistant-message"] === "string" &&
@@ -62,6 +65,42 @@ async function handleLegacyNotify(raw: string): Promise<void> {
 
 // Codex hooks (~/.codex/hooks.json) deliver their payload as JSON on stdin,
 // the same shape Claude Code uses.
+// Codex generates a thread title in a background turn right after the first
+// message. That turn also fires `agent-turn-complete`, with the title prompt as
+// input and `{"title":"..."}` as the assistant message.
+export function isTitleGenerationTurn(payload: CodexNotification): boolean {
+	const input = payload["input-messages"];
+	if (Array.isArray(input)) {
+		const prompt = input.find(
+			(item) => typeof item === "string" && item.trim() !== "",
+		);
+		if (
+			typeof prompt === "string" &&
+			prompt.startsWith(TITLE_PROMPT_PREFIX)
+		) {
+			return true;
+		}
+	}
+
+	const message = payload["last-assistant-message"];
+	if (typeof message === "string") {
+		try {
+			const parsed: unknown = JSON.parse(message);
+			if (
+				isRecord(parsed) &&
+				Object.keys(parsed).length === 1 &&
+				nonEmptyString(parsed.title) !== null
+			) {
+				return true;
+			}
+		} catch {
+			// Plain assistant text, not a title payload.
+		}
+	}
+
+	return false;
+}
+
 async function handlePermissionRequest(): Promise<void> {
 	const payload = await readPayload();
 	if (payload === null) return;
