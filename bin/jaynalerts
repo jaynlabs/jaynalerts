@@ -1,0 +1,49 @@
+#!/bin/sh
+# jaynalerts is written in TypeScript and runs on bun. npm installs it for
+# anyone with node, so the entry point cannot assume bun is on PATH: hooks fired
+# by Claude Code, Codex and GUI-launched terminals often inherit a minimal PATH
+# that omits ~/.bun/bin. This shim finds bun the way a human would, and when it
+# genuinely is not installed it says so instead of dying as `env: bun: No such
+# file or directory` inside a hook nobody is watching.
+
+set -e
+
+# Resolve this script through however many symlinks npm/bun put in front of it.
+self=$0
+while [ -L "$self" ]; do
+	link=$(readlink "$self")
+	case $link in
+	/*) self=$link ;;
+	*) self=$(dirname "$self")/$link ;;
+	esac
+done
+here=$(cd "$(dirname "$self")" && pwd)
+entry=$here/../src/cli/index.ts
+
+if command -v bun >/dev/null 2>&1; then
+	exec bun "$entry" "$@"
+fi
+
+for candidate in \
+	"${BUN_INSTALL:-$HOME/.bun}/bin/bun" \
+	"$HOME/.bun/bin/bun" \
+	/opt/homebrew/bin/bun \
+	/usr/local/bin/bun; do
+	if [ -x "$candidate" ]; then
+		exec "$candidate" "$entry" "$@"
+	fi
+done
+
+cat >&2 <<'EOF'
+jaynalerts: bun was not found.
+
+jaynalerts runs on bun (https://bun.sh). Install it, then re-run this command:
+
+  brew install oven-sh/bun/bun
+  # or: curl -fsSL https://bun.sh/install | bash
+
+If bun is already installed, make sure its directory is on PATH — hooks run
+with a minimal PATH, so a bun installed only in your shell profile is invisible
+to them.
+EOF
+exit 127

@@ -1,0 +1,13 @@
+# Example jaynalerts configuration. Copy to ~/.config/jaynalerts/config.toml and tweak.
+
+# Controls sounds used for transient and sticky notifications.
+[notifications]
+# transientSound default: null (no sound). TOML has no null value, so omit this key to keep the default.
+stickySound = "default"
+# Zoom the originating tmux pane after clicking its notification.
+tmuxZoomOnClick = true
+
+# Notify when a shell command (with the zsh hook installed) exceeds thresholdMs.
+[shell]
+thresholdMs = 15000
+ignore = ["vim", "nvim", "vi", "emacs", "nano", "less", "more", "man", "ssh", "tmux", "screen", "htop", "top", "btop", "fzf", "watch", "tail", "claude", "opencode", "pi"]

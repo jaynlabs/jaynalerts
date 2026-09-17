@@ -1,0 +1,57 @@
+{
+	"name": "jaynalerts",
+	"version": "0.1.0",
+	"description": "macOS notifications for when your AI coding agent needs you — approvals, turn completion, and long-running shell commands.",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/jaynlabs/jaynalerts.git"
+	},
+	"homepage": "https://github.com/jaynlabs/jaynalerts#readme",
+	"bugs": "https://github.com/jaynlabs/jaynalerts/issues",
+	"keywords": [
+		"macos",
+		"notifications",
+		"claude-code",
+		"codex",
+		"opencode",
+		"pi-coding-agent",
+		"cli"
+	],
+	"type": "module",
+	"os": [
+		"darwin"
+	],
+	"bin": {
+		"jaynalerts": "./bin/jaynalerts"
+	},
+	"exports": {
+		".": "./src/core/index.ts",
+		"./core": "./src/core/index.ts"
+	},
+	"engines": {
+		"bun": ">=1.1.0"
+	},
+	"scripts": {
+		"test": "bun test",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"format": "biome format --write ."
+	},
+	"files": [
+		"bin",
+		"src",
+		"assets",
+		"examples",
+		"README.md",
+		"LICENSE"
+	],
+	"dependencies": {
+		"smol-toml": "^1.6.1"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.15",
+		"@types/bun": "^1.3.13",
+		"typescript": "^6.0.3"
+	}
+}
