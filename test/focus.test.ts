@@ -84,3 +84,19 @@ test("parses a tmux socket path containing commas", () => {
 		"/tmp/tmux,custom/default",
 	);
 });
+
+test("resolves tmux to an absolute binary even when it is not on PATH", async () => {
+	const seen: string[][] = [];
+	await resolveTmuxOrigin(
+		{ TMUX: "/tmp/tmux,900,0", TMUX_PANE: "%42" },
+		async (argv) => {
+			seen.push(argv);
+			return null;
+		},
+	);
+
+	expect(seen.length).toBe(2);
+	for (const argv of seen) {
+		expect(argv[0]).toMatch(/\/tmux$/);
+	}
+});

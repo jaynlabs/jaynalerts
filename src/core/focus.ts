@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { resolvePaths } from "./paths.ts";
 
@@ -134,7 +135,10 @@ export async function resolveTmuxOrigin(
 	}
 
 	const socketPath = tmuxSocketPath(env.TMUX);
-	const tmux = ["tmux", ...(socketPath ? ["-S", socketPath] : [])];
+	const tmuxPrefix = [
+		tmuxBinPath(env),
+		...(socketPath ? ["-S", socketPath] : []),
+	];
 	const paneFormat = [
 		"#{session_name}",
 		"#{window_id}",
@@ -151,10 +155,13 @@ export async function resolveTmuxOrigin(
 
 	const [paneRaw, clientsRaw] = await Promise.all([
 		runner(
-			[...tmux, "display-message", "-p", "-t", paneId, paneFormat],
+			[...tmuxPrefix, "display-message", "-p", "-t", paneId, paneFormat],
 			HELPER_TIMEOUT_MS,
 		),
-		runner([...tmux, "list-clients", "-F", clientFormat], HELPER_TIMEOUT_MS),
+		runner(
+			[...tmuxPrefix, "list-clients", "-F", clientFormat],
+			HELPER_TIMEOUT_MS,
+		),
 	]);
 
 	const [sessionName, windowId, windowIndex, windowName, paneIndex] =
@@ -202,6 +209,34 @@ export function tmuxOriginSubtitle(origin: TmuxOrigin): string {
 		location += ` · ${origin.windowName}`;
 	}
 	return `tmux · ${location}`;
+}
+
+// Agent hooks run with a minimal PATH that misses Homebrew's tmux, which used
+// to silently truncate the captured origin. Resolve the binary the same way the
+// Swift notifier does: explicit override, then PATH, then the usual prefixes.
+const TMUX_FALLBACK_DIRS = [
+	"/opt/homebrew/bin",
+	"/usr/local/bin",
+	"/usr/bin",
+	"/bin",
+];
+
+export function tmuxBinPath(env: NodeJS.ProcessEnv = process.env): string {
+	const custom = env.JAYNALERTS_TMUX_PATH;
+	if (custom !== undefined && custom !== "" && existsSync(custom)) {
+		return custom;
+	}
+	const fromPath = Bun.which("tmux");
+	if (fromPath !== null) {
+		return fromPath;
+	}
+	for (const dir of TMUX_FALLBACK_DIRS) {
+		const candidate = `${dir}/tmux`;
+		if (existsSync(candidate)) {
+			return candidate;
+		}
+	}
+	return "tmux";
 }
 
 export function tmuxSocketPath(value: string | undefined): string | undefined {

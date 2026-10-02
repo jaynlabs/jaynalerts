@@ -202,14 +202,41 @@ func dismissAndExit() {
 	exit(0)
 }
 
+// Hooks and notify run with a minimal PATH (/usr/bin:/bin), which misses
+// Homebrew's tmux; resolve the binary explicitly instead of via /usr/bin/env.
+func tmuxExecutable() -> String {
+	let env = ProcessInfo.processInfo.environment
+	if let custom = env["JAYNALERTS_TMUX_PATH"],
+		!custom.isEmpty,
+		FileManager.default.isExecutableFile(atPath: custom)
+	{
+		return custom
+	}
+	if let searchPath = env["PATH"] {
+		for dir in searchPath.split(separator: ":") {
+			let candidate = "\(dir)/tmux"
+			if FileManager.default.isExecutableFile(atPath: candidate) {
+				return candidate
+			}
+		}
+	}
+	for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+		let candidate = "\(dir)/tmux"
+		if FileManager.default.isExecutableFile(atPath: candidate) {
+			return candidate
+		}
+	}
+	return "tmux"
+}
+
 func tmuxArguments(socket: String?, command: [String]) -> [String] {
-	["tmux"] + (socket.map { ["-S", $0] } ?? []) + command
+	(socket.map { ["-S", $0] } ?? []) + command
 }
 
 @discardableResult
 func runTmux(_ command: [String], socket: String?) -> Bool {
 	let task = Process()
-	task.launchPath = "/usr/bin/env"
+	task.launchPath = tmuxExecutable()
 	task.arguments = tmuxArguments(socket: socket, command: command)
 	task.standardOutput = FileHandle.nullDevice
 	task.standardError = FileHandle.nullDevice
@@ -224,7 +251,7 @@ func runTmux(_ command: [String], socket: String?) -> Bool {
 
 func readTmux(_ command: [String], socket: String?) -> String? {
 	let task = Process()
-	task.launchPath = "/usr/bin/env"
+	task.launchPath = tmuxExecutable()
 	task.arguments = tmuxArguments(socket: socket, command: command)
 	let pipe = Pipe()
 	task.standardOutput = pipe
